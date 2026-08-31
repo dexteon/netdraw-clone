@@ -1,0 +1,6 @@
+name,type,ip,site
+edge-rtr-02,router,10.9.0.1,HQ
+"Server, Web",server,10.9.0.5,HQ
+core-sw-02,switch,10.9.0.2,DC1
+=CMD|calc,scanner,10.9.0.9,DC1
+branch-rtr-09,router,10.9.9.1,Branch9

@@ -1,0 +1,8 @@
+[
+  {"name": "edge-rtr-01", "type": "router", "ip": "10.0.0.1", "site": "HQ"},
+  {"name": "core-sw-01", "type": "switch", "ip": "10.0.0.2", "site": "HQ"},
+  {"name": "fw-dmz-01", "type": "firewall", "ip": "10.0.0.3", "site": "HQ"},
+  {"name": "app-srv-01", "type": "server", "ip": "10.1.1.10", "site": "Branch1"},
+  {"name": "waf-01", "type": "unknown-thing", "ip": "10.1.1.11", "site": "Branch1"},
+  {"name": "branch-sw-01", "type": "switch", "ip": "10.2.2.1", "site": "Branch2"}
+]

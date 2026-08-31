@@ -171,6 +171,7 @@ body.presenting #canvasWrap{position:absolute;inset:0}
       <button id="btnSave" title="Save JSON (Ctrl+S)"><span class="btn-text">Save</span></button>
       <button id="btnOpen" title="Open JSON"><span class="btn-text">Open</span></button>
       <button id="btnPuml" title="Import / export PlantUML"><span class="btn-text">PlantUML</span></button>
+      <button id="btnIngest" title="Ingest running-config / CMDB"><span class="btn-text">Ingest</span></button>
       <button id="btnPng" title="Export PNG"><span class="btn-text">PNG</span></button>
       <button id="btnClear" title="Clear"><span class="btn-text">Clear</span></button>
     </div>
@@ -999,6 +1000,7 @@ $('#btnOpen').onclick=()=>{
   i.click();
 };
 $('#btnPuml').onclick=openPumlModal;
+$('#btnIngest').onclick=openIngestModal;
 /* ===================== examples ===================== */
 function sampleState(){
   return{
@@ -1704,7 +1706,304 @@ function ensureSneakTimer(){
   if(any&&!sneakTimer)sneakTimer=setInterval(()=>sneakStep(performance.now()),33);
   if(!any&&sneakTimer){clearInterval(sneakTimer);sneakTimer=null;}
 }
-/* ===================== PlantUML bridge (Phase 4 plans 04-01/04-02) ===================== */
+/* ===================== config ingestion (Phase 5 plans 05-01/05-02) ===================== */
+/* ---- config ingestion: pure parsers (plan 05-01) ---- */
+function parseRunningConfig(text){
+  const devices=[],links=[],warnings=[];
+  const hostnames=new Set();
+  let cur=null,curIf=null;
+  const MAX_LINES=50000;
+  const lines=String(text||'').split(/\r?\n/);
+  if(lines.length>MAX_LINES){warnings.push({reason:'line cap exceeded ('+lines.length+' > '+MAX_LINES+') — truncated'});}
+  for(let i=0;i<Math.min(lines.length,MAX_LINES);i++){
+    let ln=lines[i];
+    const hash=ln.indexOf('#');
+    if(hash>=0)ln=ln.slice(0,hash);
+    ln=ln.trim();
+    if(!ln)continue;
+    if(ln.startsWith('hostname ')){
+      const name=ln.slice(9).trim();
+      if(cur&&cur.hostname===name)continue;
+      cur={hostname:name,interfaces:[]};
+      devices.push(cur);
+      if(hostnames.has(name))warnings.push({device:name,reason:'duplicate hostname — last wins'});
+      hostnames.add(name);
+      curIf=null;
+      continue;
+    }
+    if(ln.startsWith('interface ')){
+      if(!cur)continue;
+      curIf={name:ln.slice(10).trim(),description:'',shutdown:false};
+      cur.interfaces.push(curIf);
+      continue;
+    }
+    if(ln==='!'){curIf=null;continue;}
+    if(curIf){
+      if(ln.startsWith('description '))curIf.description=ln.slice(12).trim();
+      else if(ln==='shutdown')curIf.shutdown=true;
+      continue;
+    }
+    /* noise (router ospf, access-list, vlan, etc.) — skipped silently */
+  }
+  /* peer heuristic on descriptions */
+  for(const d of devices){
+    for(const itf of d.interfaces){
+      if(!itf.description)continue;
+      const norm=itf.description.toUpperCase().replace(/[_\s]+/g,' ').trim();
+      const toks=norm.split(' ').filter(Boolean);
+      let toks2=toks.slice();
+      while(toks2.length&&['TO','LINK','UPLINK','P2P'].includes(toks2[0]))toks2.shift();
+      const cand=toks2.join('-');
+      const peer=[...hostnames].find(h=>h.toUpperCase()===cand||h.toUpperCase().replace(/[_\s]+/g,'-')===cand);
+      if(peer&&peer!==d.hostname){
+        if(!links.some(l=>(l.from===d.hostname&&l.to===peer)||(l.from===peer&&l.to===d.hostname)))
+          links.push({from:d.hostname,to:peer});
+      }else{
+        warnings.push({device:d.hostname,interface:itf.name,description:itf.description,reason:'no peer match'});
+      }
+    }
+  }
+  return{devices,links,warnings};
+}
+function mapAssetType(type){
+  const t=String(type||'').toLowerCase();
+  if(t==='router')return'router';
+  if(t==='firewall')return'firewall';
+  if(t==='switch')return'switch';
+  if(t==='server'||t==='server, web')return'server';
+  return'workstation';
+}
+function parseAssetsJSON(doc){
+  const assets=[],warnings=[];
+  let arr=doc;
+  if(typeof doc==='string'){
+    if(!doc.trim())return{assets:[],warnings:[]};
+    if(doc.length>5*1024*1024)return{assets:[],warnings:[{reason:'input exceeds 5MB cap'}]};
+    try{arr=JSON.parse(doc);}catch(e){return{assets:[],warnings:[{reason:'invalid JSON: '+e.message}]};}
+  }
+  if(!Array.isArray(arr))return{assets:[],warnings:[{reason:'expected a JSON array'}]};
+  for(const o of arr){
+    if(!o||typeof o!=='object')continue;
+    /* proto-pollution guard */
+    for(const bad of['__proto__','constructor'])if(bad in o){delete o[bad];warnings.push({reason:'dropped dangerous key '+bad});}
+    const pick=(keys)=>{for(const k of keys){if(o[k]!=null&&String(o[k]).trim())return String(o[k]);}return'';};
+    const name=pick(['name','hostname','asset_name']);
+    const type=pick(['type','category','class']);
+    const ip=pick(['ip','address','mgmt_ip']);
+    const group=pick(['site','zone','branch','location','group']);
+    if(!name){warnings.push({reason:'asset missing name — skipped'});continue;}
+    assets.push({name,type,ip,group,mappedType:mapAssetType(type)});
+  }
+  return{assets,warnings};
+}
+function splitCSVLine(line){
+  const out=[];let cur='',inQ=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(inQ){
+      if(ch==='"'){
+        if(line[i+1]==='"'){cur+='"';i++;}
+        else inQ=false;
+      }else cur+=ch;
+    }else{
+      if(ch==='"')inQ=true;
+      else if(ch===','){out.push(cur);cur='';}
+      else cur+=ch;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+function parseAssetsCSV(text){
+  const assets=[],warnings=[];
+  if(!text||!text.trim())return{assets:[],warnings:[]};
+  if(text.length>5*1024*1024)return{assets:[],warnings:[{reason:'input exceeds 5MB cap'}]};
+  const lines=text.split(/\r?\n/);
+  if(!lines.length)return{assets:[],warnings:[]};
+  const header=splitCSVLine(lines[0]).map(h=>h.trim().toLowerCase());
+  const idx=(keys)=>{for(const k of keys){const i=header.indexOf(k);if(i>=0)return i;}return-1;};
+  const iName=idx(['name','hostname','asset_name']);
+  const iType=idx(['type','category','class']);
+  const iIp=idx(['ip','address','mgmt_ip']);
+  const iGroup=idx(['site','zone','branch','location','group']);
+  for(let r=1;r<lines.length;r++){
+    if(!lines[r].trim())continue;
+    const cells=splitCSVLine(lines[r]);
+    const get=i=>i>=0&&i<cells.length?cells[i].trim():'';
+    let name=get(iName),type=get(iType),ip=get(iIp),group=get(iGroup);
+    /* CSV formula-injection sanitizer */
+    const san=v=>{
+      if(/^[=+\@\t\n]/.test(v)){warnings.push({reason:'sanitized formula-like cell: '+v.slice(0,20)});return"'"+v;}
+      return v;
+    };
+    name=san(name);type=san(type);ip=san(ip);group=san(group);
+    if(!name){warnings.push({reason:'row '+(r+1)+' missing name — skipped'});continue;}
+    assets.push({name,type,ip,group,mappedType:mapAssetType(type)});
+  }
+  return{assets,warnings};
+}
+function buildIngestNodes(parsed,opts){
+  opts=opts||{};
+  const nodes=[],edges=[],zones=[];
+  const zoneByLabel=new Map();
+  let zn=0;
+  const zoneFor=(label)=>{
+    if(!label)return null;
+    if(zoneByLabel.has(label))return zoneByLabel.get(label);
+    const z={id:'iz'+(zn++),label,color:ZONE_COLORS[zn%ZONE_COLORS.length],x:0,y:0,w:0,h:0,kind:'zone',lanes:['Lane 1'],orient:'h'};
+    zones.push(z);zoneByLabel.set(label,z);
+    return z;
+  };
+  let nn=0;
+  const addNode=(label,type,group)=>{
+    const z=zoneFor(group);
+    const perRow=4,spacing=200;
+    const x=100+(nn%perRow)*spacing+ (z?0:0),y=100+Math.floor(nn/perRow)*spacing;
+    const n={id:'in'+(nn++),label,type,x,y,color:SWATCHES[0],meta:{},fx:{}};
+    if(z){n.x=z.x+40+((z.__count||0)%3)*160;n.y=z.y+50+Math.floor((z.__count||0)/3)*130;z.__count=(z.__count||0)+1;
+      z.w=Math.max(z.w,n.x-z.x+140);z.h=Math.max(z.h,n.y-z.y+110);}
+    nodes.push(n);
+    return n;
+  };
+  if(parsed.devices){
+    /* running-config: device nodes + link edges, no zones */
+    const byHost=new Map();
+    for(const d of parsed.devices){
+      const n=addNode(d.hostname,guessDeviceType(d.hostname),null);
+      byHost.set(d.hostname,n);
+    }
+    for(const l of parsed.links||[]){
+      const a=byHost.get(l.from),b=byHost.get(l.to);
+      if(a&&b)edges.push({id:'ie'+edges.length,a:a.id,b:b.id,dash:'solid',mode:'curve',anim:false,label:''});
+    }
+  }else if(parsed.assets){
+    for(const a of parsed.assets)addNode(a.name,a.mappedType,a.group);
+  }
+  for(const z of zones)delete z.__count;
+  return{nodes,edges,zones};
+}
+function guessDeviceType(hostname){
+  const h=String(hostname||'').toUpperCase();
+  if(h.startsWith('FW')||h.includes('FIREWALL')||h.includes('ASA')||h.includes('PALO'))return'firewall';
+  if(h.includes('SW')||h.includes('SWITCH'))return'switch';
+  if(h.startsWith('R')||h.includes('ROUTER'))return'router';
+  return'switch';
+}
+/* ---- config ingestion: UI layer (plan 05-02) ---- */
+function openIngestModal(){
+  let m=document.getElementById('ingestModal');
+  if(!m){
+    m=document.createElement('div');
+    m.id='ingestModal';
+    m.style.cssText='position:fixed;inset:0;background:rgba(5,9,18,.72);display:none;align-items:center;justify-content:center;z-index:200';
+    m.innerHTML='<div style="width:min(680px,94vw);max-height:86vh;overflow-y:auto;background:var(--panel);border:1px solid var(--border2);border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.55)">'+
+      '<header style="padding:13px 18px;border-bottom:1px solid var(--border);font-weight:700;font-size:13.5px">Ingest config / CMDB <button id="igClose" style="float:right;min-width:24px">✕</button></header>'+
+      '<div style="padding:16px 20px">'+
+      '<label style="font-size:10.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.8px">Source type</label>'+
+      '<select id="igSource" style="width:100%;background:#0e1626;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:12.5px;margin:6px 0 12px"><option value="cfg">running-config (Cisco)</option><option value="json">CMDB JSON</option><option value="csv">CMDB CSV</option></select>'+
+      '<textarea id="igPaste" rows="8" spellcheck="false" placeholder="paste running-config / JSON / CSV…" style="width:100%;box-sizing:border-box;background:#0e1626;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;outline:none;resize:vertical"></textarea>'+
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:10px">'+
+      '<input id="igFile" type="file" accept=".cfg,.json,.csv,.txt,text/plain,application/json" style="flex:1;font-size:12px;color:var(--muted)">'+
+      '<button id="igParseBtn">Parse</button>'+
+      '</div>'+
+      '<div id="igPreview" style="margin-top:14px"></div>'+
+      '<div style="display:flex;gap:8px;margin-top:14px">'+
+      '<button id="igReplace" class="primary" disabled>Replace</button>'+
+      '<button id="igMerge" disabled>Merge</button>'+
+      '<button id="igCancel">Cancel</button>'+
+      '</div></div></div>';
+    document.body.appendChild(m);
+    document.getElementById('igClose').onclick=document.getElementById('igCancel').onclick=()=>{m.style.display='none';};
+    document.getElementById('igFile').onchange=ev=>{
+      const f=ev.target.files[0];if(!f)return;
+      if(f.size>5*1024*1024){document.getElementById('igPreview').textContent='File exceeds 5MB cap — refused';return;}
+      const safeName=f.name.replace(/\.\.[\/\\]/g,'').replace(/^[\/\\]+/,'');
+      const rd=new FileReader();
+      rd.onload=()=>{document.getElementById('igPaste').value=rd.result;ingestParse();};
+      rd.readAsText(f);
+      document.getElementById('igPreview').textContent='Loaded '+safeName;
+    };
+    document.getElementById('igParseBtn').onclick=ingestParse;
+    document.getElementById('igReplace').onclick=()=>applyIngest(ingestParsed,'replace');
+    document.getElementById('igMerge').onclick=()=>applyIngest(ingestParsed,'merge');
+  }
+  m.style.display='flex';
+}
+let ingestParsed=null;
+function ingestParse(){
+  const src=document.getElementById('igSource').value;
+  const txt=document.getElementById('igPaste').value;
+  const prev=document.getElementById('igPreview');
+  if(!txt.trim()){prev.textContent='Paste or load a file first';return;}
+  if(txt.length>5*1024*1024){prev.textContent='Input exceeds 5MB cap — refused';return;}
+  let parsed=null,sourceType=src;
+  try{
+    if(src==='cfg'){const r=parseRunningConfig(txt);parsed={devices:r.devices,links:r.links,warnings:r.warnings};}
+    else if(src==='json'){const r=parseAssetsJSON(txt);parsed={assets:r.assets,warnings:r.warnings};}
+    else{const r=parseAssetsCSV(txt);parsed={assets:r.assets,warnings:r.warnings};}
+  }catch(e){prev.textContent='Parse error: '+e.message;return;}
+  ingestParsed=parsed;
+  renderPreview(parsed,sourceType);
+}
+function renderPreview(parsed,sourceType){
+  const prev=document.getElementById('igPreview');
+  const frag=buildIngestNodes(parsed);
+  const isCfg=!!parsed.devices;
+  const count=isCfg?parsed.devices.length:parsed.assets.length;
+  let html='';
+  html+='<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Source: <b style="color:var(--text)">'+(isCfg?'running-config':'CMDB '+(sourceType==='json'?'JSON':'CSV'))+'</b> · '+count+' '+(isCfg?'devices':'assets')+(isCfg?' · '+parsed.links.length+' links':'')+' · '+frag.zones.length+' zones</div>';
+  if(parsed.warnings&&parsed.warnings.length)html+='<div style="font-size:11px;color:#fbbf24;margin-bottom:8px">'+parsed.warnings.length+' warning(s) — first: '+String(parsed.warnings[0].reason||parsed.warnings[0].description||'').slice(0,60)+'</div>';
+  html+='<table style="width:100%;border-collapse:collapse;font-size:11.5px">';
+  html+='<tr style="color:var(--faint);text-align:left">'+(isCfg?'<th>hostname</th><th>type</th><th>interfaces</th>':'<th>name</th><th>type</th><th>ip</th><th>group</th>')+'</tr>';
+  const rows=isCfg?parsed.devices:parsed.assets;
+  rows.slice(0,10).forEach(r=>{
+    html+='<tr style="border-top:1px solid var(--border)">';
+    if(isCfg)html+='<td>'+esc(r.hostname)+'</td><td>'+guessDeviceType(r.hostname)+'</td><td>'+r.interfaces.length+'</td>';
+    else html+='<td>'+esc(r.name)+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.ip)+'</td><td>'+esc(r.group)+'</td>';
+    html+='</tr>';
+  });
+  html+='</table>';
+  if(rows.length>10)html+='<div style="font-size:11px;color:var(--faint);margin-top:4px">… '+(rows.length-10)+' more</div>';
+  if(frag.zones.length){
+    html+='<div style="margin-top:8px;font-size:11.5px;color:var(--muted)">Zones: '+frag.zones.map(z=>'<span style="color:'+z.color+'">'+esc(z.label)+'</span>').join(', ')+'</div>';
+  }
+  prev.innerHTML=html;
+  const hasAny=count>0;
+  document.getElementById('igReplace').disabled=!hasAny;
+  document.getElementById('igMerge').disabled=!hasAny;
+}
+function applyIngest(parsed,mode){
+  if(!parsed)return;
+  const frag=buildIngestNodes(parsed);
+  if(mode==='replace'){
+    state.nodes=frag.nodes;state.edges=frag.edges;state.zones=frag.zones;
+  }else{
+    const norm=s=>String(s||'').trim().toLowerCase();
+    const existing=new Set(state.nodes.map(n=>norm(n.label)));
+    const offset=Math.max(state.nodes.length+state.edges.length+state.zones.length,100);
+    const idMap=new Map();
+    let k=offset;
+    for(const n of frag.nodes){
+      const nk=norm(n.label);
+      if(existing.has(nk))continue;
+      existing.add(nk);
+      const id='mn'+(k++);
+      idMap.set(n.id,id);
+      state.nodes.push({...n,id,x:n.x+400,y:n.y+400});
+    }
+    for(const e of frag.edges){
+      const a=idMap.get(e.a),b=idMap.get(e.b);
+      if(a&&b)state.edges.push({...e,id:'me'+(k++),a,b});
+    }
+    for(const z of frag.zones)state.zones.push({...z,id:'mz'+(k++),x:z.x+400,y:z.y+400});
+  }
+  sel=null;hideProps();
+  restoreIds();
+  commit();renderAll();zoomFit();
+  const m=document.getElementById('ingestModal');
+  if(m)m.style.display='none';
+  toast('Ingested '+frag.nodes.length+' nodes ('+mode+')');
+}
 const MAX_PUML_DEPTH=64;
 const PUML_STEREOTYPE_MAP={
   database:'database',node:'server',cloud:'cloud',actor:'person',queue:'server',
