@@ -170,6 +170,7 @@ body.presenting #canvasWrap{position:absolute;inset:0}
       <button id="btnJourney" title="Journey builder / present (J)"><span class="btn-text">Journey</span></button>
       <button id="btnSave" title="Save JSON (Ctrl+S)"><span class="btn-text">Save</span></button>
       <button id="btnOpen" title="Open JSON"><span class="btn-text">Open</span></button>
+      <button id="btnPuml" title="Import / export PlantUML"><span class="btn-text">PlantUML</span></button>
       <button id="btnPng" title="Export PNG"><span class="btn-text">PNG</span></button>
       <button id="btnClear" title="Clear"><span class="btn-text">Clear</span></button>
     </div>
@@ -319,6 +320,7 @@ let picking=false,pickStep=-1,multiPickBase=null;
 let snapOn=true;
 let undoStack=[],redoStack=[],lastSnap='';
 let tweenRAF=null;
+let sneakTimer=null;
 let saveTimer=null;
 const $=q=>document.querySelector(q);
 const svg=$('#canvas'),gZ=$('#gZones'),gE=$('#gEdges'),gN=$('#gNodes'),gT=$('#gTemp'),gU=$('#gUI'),worldG=$('#worldG');
@@ -996,6 +998,7 @@ $('#btnOpen').onclick=()=>{
   i.onchange=()=>{if(i.files[0])importJSON(i.files[0]);};
   i.click();
 };
+$('#btnPuml').onclick=openPumlModal;
 /* ===================== examples ===================== */
 function sampleState(){
   return{
@@ -1283,6 +1286,7 @@ function buildExportMenu(){
     {label:'SVG (vector)',fn:exportSVG},
     {label:'PNG (2x)',fn:exportPNG},
     {label:'GIF (animated)',fn:exportGIF},
+    {label:'PlantUML (.puml)',fn:exportPuml},
     {label:'Record video…',fn:openRecordUI},
   ];
   const m=document.createElement('div');
@@ -1694,11 +1698,346 @@ function sneakStep(now){
     });
   });
 }
-let sneakTimer=null;
+let sneakTimerDeclared=true;
 function ensureSneakTimer(){
   const any=state.edges.some(e=>e.dash==='sneakernet');
   if(any&&!sneakTimer)sneakTimer=setInterval(()=>sneakStep(performance.now()),33);
   if(!any&&sneakTimer){clearInterval(sneakTimer);sneakTimer=null;}
+}
+/* ===================== PlantUML bridge (Phase 4 plans 04-01/04-02) ===================== */
+const MAX_PUML_DEPTH=64;
+const PUML_STEREOTYPE_MAP={
+  database:'database',node:'server',cloud:'cloud',actor:'person',queue:'server',
+  artifact:'document',boundary:'process',control:'process',entity:'process',
+  card:'workstation',collections:'workstation',frame:'org',folder:'org',
+  interface:'connector',component:'workstation',usecase:'process',storage:'nas',
+  rectangle:'server',stack:'server',
+};
+const PUML_KEYWORDS=Object.keys(PUML_STEREOTYPE_MAP).sort((a,b)=>b.length-a.length);
+function pumlSanitizeAlias(s){
+  let a=String(s||'').replace(/[^A-Za-z0-9_]/g,'_');
+  if(!a||/^[0-9]/.test(a))a='p_'+a;
+  return a;
+}
+function pumlStripCreole(s){
+  return String(s||'')
+    .replace(/<[^>]*>/g,'')
+    .replace(/\\n/g,' · ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function normalizeLines(text){
+  const out=[];
+  const raw=String(text||'').split(/\r?\n/);
+  let inBlock=false;
+  for(let line of raw){
+    if(inBlock){
+      const end=line.indexOf("'/");
+      if(end>=0){inBlock=false;line=line.slice(end+2);}else continue;
+    }
+    const bs=line.indexOf("'/");
+    if(bs>=0){
+      const rest=line.slice(bs+2);
+      const end=rest.indexOf("'/");
+      if(end>=0)line=line.slice(0,bs)+rest.slice(end+2);
+      else{line=line.slice(0,bs);inBlock=true;}
+    }
+    /* strip ' line comment: skip quotes — find ' outside double-quoted segments */
+    let inQ=false,cut=-1;
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      if(ch==='"'){inQ=!inQ;continue;}
+      if(ch==="'"&&!inQ&&/\s'/.test(line.slice(Math.max(0,i-1),i+1)||" '")){cut=i;break;}
+      if(ch==="'"&&!inQ&&(i===0||/\s/.test(line[i-1]))){cut=i;break;}
+    }
+    if(cut>=0)line=line.slice(0,cut);
+    line=line.replace(/\s+$/,'');
+    if(line.trim())out.push(line.trim());
+  }
+  return out;
+}
+function parseDeclaration(line,ctx){
+  for(const kw of PUML_KEYWORDS){
+    const re=new RegExp('^'+kw+'\\s+(.*)$','i');
+    const m=line.match(re);
+    if(!m)continue;
+    let rest=m[1];
+    let display=null,alias=null,stereo=null;
+    const dq=rest.match(/^"((?:[^"\\]|\\.)*)"\s*(.*)$/);
+    if(dq){display=dq[1];rest=dq[2];}
+    const asM=rest.match(/^as\s+([A-Za-z0-9_]+)/i);
+    if(asM){alias=asM[1];rest=rest.slice(asM[0].length);}
+    const stM=rest.match(/<<([^>]*)>>/);
+    if(stM)stereo=stM[1];
+    if(!alias&&!display){
+      const bare=rest.match(/^([A-Za-z0-9_]+)/);
+      if(bare)alias=bare[1];
+    }
+    return{alias,display,keyword:kw.toLowerCase(),stereotype:stereo,kind:'node'};
+  }
+  return null;
+}
+function parseArrow(line){
+  /* FROM [<] run [color] [dir] run [>] TO [: label] — runs are dashes (solid) or dots (dashed) */
+  const re=/^(\[[^\]]*\]|"[^"]*"|[A-Za-z0-9_]+)\s*(<)?\s*([.\-]+)\s*(\[[^\]]*\])?\s*(?:(left|right|up|down)\s*)?([.\-]*)\s*(>)?\s*(\[[^\]]*\]|"[^"]*"|[A-Za-z0-9_]+)\s*(?::\s*(.*))?$/;
+  const m=line.match(re);
+  if(!m)return null;
+  const rawFrom=m[1],rawTo=m[8];
+  const runs=(m[3]||'')+(m[6]||'');
+  const style=runs.includes('.')||(m[3]||'').startsWith('.')||(m[6]||'').includes('.')?'dashed':'solid';
+  const side=s=>{
+    if(s.startsWith('['))return s.slice(1,-1);
+    if(s.startsWith('"'))return s.slice(1,-1);
+    return s;
+  };
+  return{
+    fromAlias:pumlSanitizeAlias(side(rawFrom)),
+    toAlias:pumlSanitizeAlias(side(rawTo)),
+    label:pumlStripCreole(m[9]||''),
+    style,
+  };
+}
+function pumlParse(text){
+  const zones=[],nodes=[],edges=[],warnings=[];
+  const byAlias=new Map();
+  const stack=[];
+  let declCount=0;
+  for(const line of normalizeLines(text)){
+    /* skip directives & noise (collected as warnings later if unrecognized) */
+    if(/^(skinparam|title|caption|note\s|legend|endlegend|!include|hide|remove|allowmixing|@startuml|@enduml|startuml|enduml|skinparam\b)/i.test(line)){continue;}
+    const pkgM=line.match(/^package\s+(?:"([^"]*)"|([A-Za-z0-9_]+))\s*(?:as\s+([A-Za-z0-9_]+))?\s*(#\S+)?\s*\{(.*)$/i)||line.match(/^package\s+(?:"([^"]*)"|([A-Za-z0-9_]+))\s*(?:as\s+([A-Za-z0-9_]+))?\s*(#\S+)?\s*\{(.*)$/i);
+    if(pkgM){
+      if(stack.length>=MAX_PUML_DEPTH){
+        warnings.push('brace depth cap exceeded at "'+line.slice(0,40)+'" — remaining nesting flattened');
+        continue;
+      }
+      const label=pkgM[1]||pkgM[2];
+      const alias=pumlSanitizeAlias(pkgM[3]||label);
+      const z={label,alias,children:[],parentAlias:stack.length?stack[stack.length-1].alias:null,nodes:[]};
+      zones.push(z);
+      stack.push(z);
+      const tail=(pkgM[5]||'').trim();
+      if(tail){parseInnerLine(tail);}
+      continue;
+    }
+    if(/^(\}|end\s+package)\s*$/i.test(line)){
+      if(stack.length)stack.pop();
+      continue;
+    }
+    parseInnerLine(line);
+  }
+  function parseInnerLine(ln){
+    const arrow=parseArrow(ln);
+    if(arrow){edges.push(arrow);return;}
+    const decl=parseDeclaration(ln,stack);
+    if(decl){
+      declCount++;
+      const type=PUML_STEREOTYPE_MAP[decl.keyword]||'workstation';
+      const alias=pumlSanitizeAlias(decl.alias||decl.display||decl.keyword+declCount);
+      const label=pumlStripCreole(decl.display||decl.alias||decl.keyword+' '+declCount);
+      const meta={pumlKind:decl.keyword};
+      if(decl.stereotype)meta.stereotype=decl.stereotype;
+      const n={alias,type,label,meta,zoneAlias:stack.length?stack[stack.length-1].alias:null};
+      nodes.push(n);
+      byAlias.set(alias,n);
+      if(stack.length)stack[stack.length-1].nodes.push(alias);
+      return;
+    }
+    if(ln.trim())warnings.push('unrecognized: '+ln.slice(0,60));
+  }
+  /* resolve edge endpoints: alias → alias match, else label match */
+  for(const e of edges){
+    e.a=resolveAlias(e.fromAlias);
+    e.b=resolveAlias(e.toAlias);
+  }
+  function resolveAlias(a){
+    if(byAlias.has(a))return a;
+    for(const n of nodes){
+      if(pumlSanitizeAlias(n.label)===a)return n.alias;
+      if(n.label===a)return n.alias;
+    }
+    return a;
+  }
+  return{zones,nodes,edges,warnings};
+}
+function pumlLayout(parsed){
+  const NWL=NW+20,NHL=NH+20,ZONE_GAP=60,PAD=20,LABEL=30;
+  const nodes=[],edges=[],zones=[];
+  const idBase=Math.max(state.nodes.length+state.edges.length+state.zones.length,1000);
+  let idn=idBase;
+  const aliasToId=new Map();
+  const aliasToIdx=new Map();
+  for(let i=0;i<parsed.nodes.length;i++){
+    const id='n'+(idn++);
+    aliasToId.set(parsed.nodes[i].alias,id);
+    aliasToIdx.set(parsed.nodes[i].alias,i);
+    nodes.push({id,type:parsed.nodes[i].type,x:0,y:0,label:parsed.nodes[i].label,color:SWATCHES[0],meta:parsed.nodes[i].meta||{},fx:{}});
+  }
+  let idz=idBase;
+  const zoneIdByAlias=new Map();
+  for(const z of parsed.zones){
+    const id='z'+(idz++);
+    zoneIdByAlias.set(z.alias,id);
+    zones.push({id,x:0,y:0,w:0,h:0,label:z.label,color:ZONE_COLORS[(idz-idBase-1)%ZONE_COLORS.length],kind:'zone',lanes:['Lane 1'],orient:'h',nodeIds:[]});
+  }
+  /* containment: node → outermost zone (v1 flattens nesting) */
+  const nodeZone=new Map();
+  for(const n of parsed.nodes){
+    let z=null;
+    if(n.zoneAlias){
+      z=parsed.zones.find(zz=>zz.alias===n.zoneAlias);
+      while(z&&z.parentAlias){
+        const p=parsed.zones.find(zz=>zz.alias===z.parentAlias);
+        if(!p)break;
+        z=p;
+      }
+    }
+    if(z)nodeZone.set(n.alias,z.alias);
+  }
+  /* zone → its nodes (direct + inherited from nested, flattened) */
+  const zoneMembers=new Map();
+  for(const z of parsed.zones)zoneMembers.set(z.alias,[]);
+  for(const n of parsed.nodes){
+    const za=nodeZone.get(n.alias);
+    if(za&&zoneMembers.has(za))zoneMembers.get(za).push(n.alias);
+  }
+  /* order zones deterministically: fewest members first, then alias order */
+  const zorder=parsed.zones.slice().sort((a,b)=>zoneMembers.get(a.alias).length-zoneMembers.get(b.alias).length||a.alias.localeCompare(b.alias));
+  let zx=100,zy=100,maxRowH=0;
+  const zoneAliasToRect=new Map();
+  for(const z of zorder){
+    const members=zoneMembers.get(z.alias)||[];
+    const cols=Math.max(1,Math.ceil(Math.sqrt(Math.max(members.length,1))));
+    const rows=Math.ceil(members.length/cols)||1;
+    const w=cols*NWL+PAD*2,h=rows*NHL+PAD*2+LABEL;
+    zoneAliasToRect.set(z.alias,{x:zx,y:zy,w,h});
+    members.forEach((ma,i)=>{
+      const idx=aliasToIdx.get(ma);
+      if(idx!=null){
+        nodes[idx].x=zx+PAD+(i%cols)*NWL;
+        nodes[idx].y=zy+PAD+LABEL+Math.floor(i/cols)*NHL;
+      }
+    });
+    const zi=zones.findIndex(zz=>zz.label===z.label&&zz.nodeIds!==undefined);
+    /* attach member ids to the zone object in our zones array via alias map */
+    const zid=zoneIdByAlias.get(z.alias);
+    const zobj=zones.find(zz=>zz.id===zid);
+    if(zobj){zobj.x=zx;zobj.y=zy;zobj.w=Math.max(w,140);zobj.h=Math.max(h,100);zobj.nodeIds=members.map(ma=>aliasToId.get(ma));}
+    maxRowH=Math.max(maxRowH,h);
+    zx+=w+ZONE_GAP;
+    if(zx>1400){zx=100;zy+=maxRowH+ZONE_GAP;maxRowH=0;}
+  }
+  /* unzoned nodes grid below all zones */
+  const unz=parsed.nodes.filter(n=>!nodeZone.has(n.alias));
+  const ucols=Math.ceil(Math.sqrt(Math.max(unz.length,1)))||1;
+  const urows=Math.ceil(unz.length/ucols)||1;
+  const ux0=100,uy0=zy+maxRowH+ZONE_GAP;
+  unz.forEach((n,i)=>{
+    const idx=aliasToIdx.get(n.alias);
+    if(idx!=null){
+      nodes[idx].x=ux0+(i%ucols)*NWL;
+      nodes[idx].y=uy0+Math.floor(i/ucols)*NHL;
+    }
+  });
+  /* edges: map aliases to ids; drop dangling */
+  let ide=idBase;
+  for(const e of parsed.edges){
+    const aId=aliasToId.get(e.a),bId=aliasToId.get(e.b);
+    if(!aId||!bId)continue;
+    edges.push({id:'e'+(ide++),a:aId,b:bId,dash:e.style==='dashed'?'dashed':'solid',mode:'curve',anim:false,label:e.label||''});
+  }
+  /* strip layout-only fields from zones */
+  for(const z of zones)delete z.nodeIds;
+  return{nodes,edges,zones};
+}
+function doPumlImport(text){
+  const parsed=pumlParse(text);
+  if(parsed.warnings.length){
+    toast(parsed.warnings.length+' warning(s) — see console');
+    console.warn('puml warnings:',parsed.warnings);
+  }
+  const frag=pumlLayout(parsed);
+  state.nodes=frag.nodes;state.edges=frag.edges;state.zones=frag.zones;
+  sel=null;hideProps();
+  restoreIds();
+  commit();renderAll();zoomFit();
+  toast('Imported '+frag.nodes.length+' nodes, '+frag.edges.length+' links, '+frag.zones.length+' zones');
+}
+function openPumlModal(){
+  const m=$('#pumlModal');
+  if(!m){
+    const ov=document.createElement('div');
+    ov.id='pumlModal';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(5,9,18,.72);display:flex;align-items:center;justify-content:center;z-index:200';
+    ov.innerHTML='<div style="width:min(640px,92vw);background:var(--panel);border:1px solid var(--border2);border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.55);overflow:hidden">'+
+      '<header style="padding:13px 18px;border-bottom:1px solid var(--border);font-weight:700;font-size:13.5px">Import PlantUML <button id="pumlClose" style="float:right;min-width:24px">✕</button></header>'+
+      '<div style="padding:16px 20px">'+
+      '<textarea id="pumlPaste" rows="12" spellcheck="false" placeholder="@startuml\npackage DMZ {\n  component \"Web\" as web\n}\nweb --> db : reads\n@enduml" style="width:100%;box-sizing:border-box;background:#0e1626;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;outline:none;resize:vertical"></textarea>'+
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:12px">'+
+      '<input id="pumlFile" type="file" accept=".puml,text/plain" style="flex:1;font-size:12px;color:var(--muted)">'+
+      '<button id="pumlImportBtn" class="primary">Import</button>'+
+      '<button id="pumlCancel">Cancel</button>'+
+      '</div></div></div>';
+    document.body.appendChild(ov);
+    $('#pumlClose').onclick=$('#pumlCancel').onclick=()=>{ov.style.display='none';};
+    $('#pumlFile').onchange=ev=>{
+      const f=ev.target.files[0];if(!f)return;
+      const rd=new FileReader();
+      rd.onload=()=>{$('#pumlPaste').value=rd.result;};
+      rd.readAsText(f);
+    };
+    $('#pumlImportBtn').onclick=()=>{
+      const txt=$('#pumlPaste').value;
+      if(!txt.trim()){toast('Paste PlantUML first');return;}
+      $('#pumlImportBtn').disabled=true;
+      try{doPumlImport(txt);}finally{$('#pumlImportBtn').disabled=false;ov.style.display='none';}
+    };
+  }
+  $('#pumlModal').style.display='flex';
+  $('#pumlPaste').value='';
+}
+function pumlSerialize(st){
+  const L=[];
+  L.push('@startuml');
+  const seen=new Set();
+  for(const z of st.zones){
+    const za=pumlSanitizeAlias('z_'+z.id);
+    L.push('package "'+String(z.label).replace(/"/g,'\\"')+'" as '+za+' {');
+    for(const n of st.nodes){
+      if(seen.has(n.id))continue;
+      if(!inZone(n.x,n.y,z))continue;
+      seen.add(n.id);
+      const inv=Object.entries(PUML_STEREOTYPE_MAP).find(([k,v])=>v===n.type);
+      L.push('  component "'+String(n.label).replace(/"/g,'\\"')+'" as '+pumlSanitizeAlias(n.id)+(inv?' <<'+inv[0]+'>>':''));
+    }
+    L.push('}');
+  }
+  for(const n of st.nodes){
+    if(seen.has(n.id))continue;
+    const inv=Object.entries(PUML_STEREOTYPE_MAP).find(([k,v])=>v===n.type);
+    L.push('component "'+String(n.label).replace(/"/g,'\\"')+'" as '+pumlSanitizeAlias(n.id)+(inv?' <<'+inv[0]+'>>':''));
+  }
+  for(const e of st.edges){
+    const from=pumlSanitizeAlias(e.a),to=pumlSanitizeAlias(e.b);
+    const lab=e.label?': '+String(e.label).replace(/"/g,'\\"'):'';
+    if(e.dash==='dashed')L.push(from+' ..> '+to+(lab?' '+lab:''));
+    else L.push(from+' --> '+to+(lab?' '+lab:''));
+  }
+  L.push('@enduml');
+  return L.join('\n');
+}
+function exportPuml(){
+  const text=pumlSerialize(state);
+  download('diagram.puml',new Blob([text],{type:'text/plain;charset=utf-8'}));
+  toast('PlantUML exported');
+}
+function pumlRoundTrip(text){
+  const m1=pumlParse(text);
+  const frag1=pumlLayout(m1);
+  const out=pumlSerialize({nodes:frag1.nodes,edges:frag1.edges,zones:frag1.zones});
+  const m2=pumlParse(out);
+  const labelsMatch=(a,b)=>a.length===b.length&&a.every(l=>b.includes(l));
+  return{m1,m2,out,pass:m2.nodes.length===m1.nodes.length&&m2.edges.length===m1.edges.length&&m2.zones.length===m1.zones.length&&labelsMatch(m2.nodes.map(n=>n.label),m1.nodes.map(n=>n.label))};
 }
 </script>
 </body>
