@@ -1,0 +1,13 @@
+{
+  "name": "netdraw-clone",
+  "version": "1.0.0",
+  "description": "Zero-dependency single-file network diagram editor — clean-room clone of NetDraw",
+  "private": true,
+  "scripts": {
+    "test": "node test/run-tests.js",
+    "audit": "node test/audit.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}
