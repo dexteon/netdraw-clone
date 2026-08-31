@@ -72,7 +72,7 @@ g.nodeg:hover .ports{opacity:1}
 .edge{cursor:pointer}
 .edge:hover .vis{stroke:#9db2d0}
 .edge.sel .vis{stroke:#7dd3fc}
-.vis.anim{animation:dashflow .8s linear infinite}
+.vis.anim{animation:dashflow .8s linear infinite;stroke-dasharray:6 8 !important}
 @keyframes dashflow{to{stroke-dashoffset:-28}}
 #hintbar{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
   background:rgba(15,22,38,.85);border:1px solid var(--border);border-radius:99px;
@@ -828,8 +828,16 @@ window.addEventListener('pointermove',ev=>{
       if(ls.lane){gU.innerHTML='';gU.appendChild(el('rect',{x:ls.lane.x,y:ls.lane.y,width:ls.lane.w,height:ls.lane.h,fill:'rgba(125,211,252,.08)',stroke:'#7dd3fc','stroke-width':1,'stroke-dasharray':'4 3'}));}
       else gU.innerHTML='';
     }
+    if(snapOn&&drag.zone){nx=snap(nx);ny=snap(ny);}
     if(drag.n){drag.n.x=nx;drag.n.y=ny;}
-    if(drag.zone){drag.zone.x=nx;drag.zone.y=ny;}
+    if(drag.zone){
+      const dx=nx-drag.zone.x,dy=ny-drag.zone.y;
+      /* move all contained nodes with the zone (group move) */
+      for(const n of state.nodes){
+        if(inZone(n.x+nodeW(n)/2,n.y+nodeH(n)/2,drag.zone)){n.x+=dx;n.y+=dy;}
+      }
+      drag.zone.x=nx;drag.zone.y=ny;
+    }
     renderAll();
     return;}
 });
