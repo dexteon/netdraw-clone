@@ -1,6 +1,6 @@
-# NetDraw Clone
+# NetDraw 
 
-A zero-dependency, single-file network diagram editor — draw infrastructure, present attack paths, ingest real configs. Clean-room implementation inspired by [NetDraw](https://github.com/mr-r3b00t/NetDraw) (no code copied).
+A zero-dependency, single-file network diagram editor — draw infrastructure, present attack paths, ingest real configs. 
 
 ![NetDraw demo](docs/demo.gif)
 
