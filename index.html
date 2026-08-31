@@ -295,7 +295,19 @@ phishing:'<path d="M3.5 12a8.5 8.5 0 0 0 17 0z"/><path d="M3.5 12 6 6l6-2.5L18 6
 c2:'<circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M10.8 7.2 6.2 16.8M13.2 7.2l4.6 9.6M7.5 19h9"/>',
 };
 /* TYPES: key -> {cat, shape, icon-ref-by-key} */
-function T(cat,shape){return{cat,shape};}
+function T(cat,shape,color){return{cat,shape,color};}
+const TYPE_COLORS={
+  internet:'#38bdf8',cloud:'#38bdf8',router:'#60a5fa',switch:'#a78bfa',wifi:'#38bdf8',asn:'#38bdf8',ipaddress:'#38bdf8',
+  firewall:'#f87171',waf:'#f87171',proxy:'#fb923c',
+  server:'#34d399',database:'#34d399',nas:'#2dd4bf',san:'#2dd4bf',datastore:'#34d399',fileservice:'#2dd4bf',
+  laptop:'#fbbf24',desktop:'#fbbf24',mobile:'#fbbf24',tablet:'#fbbf24',printer:'#94a3b8',scanner:'#94a3b8',thinclient:'#fbbf24',
+  person:'#c084fc',users:'#c084fc',admin:'#c084fc',attacker:'#ef4444',malware:'#ef4444',bot:'#ef4444',
+  building:'#94a3b8',office:'#94a3b8',datacenter:'#94a3b8',cloudorg:'#94a3b8',org:'#94a3b8',site:'#94a3b8',
+  startend:'#34d399',process:'#60a5fa',decision:'#fbbf24',dataio:'#2dd4bf',document:'#94a3b8',predefined:'#a78bfa',preparation:'#a78bfa',manualinput:'#fbbf24',delay:'#fb923c',connector:'#94a3b8',
+  apt:'#ef4444',ransomware:'#ef4444',phishing:'#ef4444',exploit:'#ef4444',payload:'#ef4444',c2:'#ef4444',backdoor:'#ef4444',
+  workstation:'#fbbf24',connector_old:'#94a3b8',
+};
+function typeColor(type){return TYPE_COLORS[type]||SWATCHES[0];}
 const TYPES={
 internet:T('Network','card'),cloud:T('Network','card'),router:T('Network','card'),switch:T('Network','card'),wifi:T('Network','card'),asn:T('Network','card'),ipaddress:T('Network','card'),
 firewall:T('Security & Edge','card'),waf:T('Security & Edge','card'),proxy:T('Security & Edge','card'),cdn:T('Security & Edge','card'),loadbalancer:T('Security & Edge','card'),apigateway:T('Security & Edge','card'),
@@ -326,7 +338,16 @@ let saveTimer=null;
 const $=q=>document.querySelector(q);
 const svg=$('#canvas'),gZ=$('#gZones'),gE=$('#gEdges'),gN=$('#gNodes'),gT=$('#gTemp'),gU=$('#gUI'),worldG=$('#worldG');
 const el=(t,a={})=>{const e=document.createElementNS(SVGNS,t);for(const k in a)e.setAttribute(k,a[k]);return e;};
-function ic(g,key){g.innerHTML='<g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" transform="translate(12,12) scale(1.15) translate(-12,-12)">'+(ICONS[key]||'')+'</g>';}
+function ic(g,key){
+  const host=g.ownerSVGElement;
+  if(host){
+    /* SVG context (canvas node icon): inject a group directly */
+    g.innerHTML='<g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" transform="translate(12,12) scale(1.15) translate(-12,-12)">'+(ICONS[key]||'')+'</g>';
+  }else{
+    /* HTML context (palette): must wrap in a real <svg> or the <g> won't render */
+    g.innerHTML='<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="color:inherit">'+(ICONS[key]||'')+'</svg>';
+  }
+}
 const esc=s=>{const d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML;};
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const snap=v=>snapOn?Math.round(v/GRID)*GRID:v;
@@ -368,7 +389,7 @@ function restoreIds(){
 }
 /* ===================== model ops ===================== */
 function addNode(type,x,y,label,color){
-  const n={id:'n'+(nid++),type,x,y,label:label||type,color:color||SWATCHES[0],meta:{},fx:{}};
+  const n={id:'n'+(nid++),type,x,y,label:label||type,color:color||typeColor(type),meta:{},fx:{}};
   state.nodes.push(n);commit();select({type:'node',id:n.id});renderAll();return n;
 }
 function addZone(x,y,w,h,label,color,kind){
@@ -1020,9 +1041,9 @@ function sampleState(){
       {id:'n5',type:'workstation',x:520,y:300,label:'eng-ws-02',color:'#fbbf24',meta:{},fx:{}},
     ],
     edges:[
-      {id:'e1',a:'n1',b:'n2',dash:'solid',mode:'curve',anim:false,label:''},
-      {id:'e2',a:'n2',b:'n3',dash:'solid',mode:'curve',anim:false,label:''},
-      {id:'e3',a:'n3',b:'n4',dash:'solid',mode:'curve',anim:false,label:''},
+      {id:'e1',a:'n1',b:'n2',dash:'solid',mode:'curve',anim:true,label:''},
+      {id:'e2',a:'n2',b:'n3',dash:'solid',mode:'curve',anim:true,label:''},
+      {id:'e3',a:'n3',b:'n4',dash:'solid',mode:'curve',anim:true,label:''},
       {id:'e4',a:'n3',b:'n5',dash:'solid',mode:'curve',anim:false,label:''},
     ],
     zones:[{id:'z1',x:80,y:80,w:640,h:360,label:'DMZ',color:'#38bdf8',kind:'zone',lanes:['Lane 1'],orient:'h'}],
@@ -1040,8 +1061,8 @@ function flowState(){
       {id:'n6',type:'startend',x:980,y:200,label:'Report',color:'#a78bfa',meta:{},fx:{}},
     ],
     edges:[
-      {id:'e1',a:'n1',b:'n2',dash:'solid',mode:'curve',anim:false,label:''},
-      {id:'e2',a:'n2',b:'n3',dash:'solid',mode:'curve',anim:false,label:''},
+      {id:'e1',a:'n1',b:'n2',dash:'solid',mode:'curve',anim:true,label:''},
+      {id:'e2',a:'n2',b:'n3',dash:'solid',mode:'curve',anim:true,label:''},
       {id:'e3',a:'n3',b:'n4',dash:'solid',mode:'curve',anim:false,label:'yes'},
       {id:'e4',a:'n3',b:'n5',dash:'dotted',mode:'curve',anim:false,label:'no'},
       {id:'e5',a:'n4',b:'n6',dash:'solid',mode:'curve',anim:false,label:''},
