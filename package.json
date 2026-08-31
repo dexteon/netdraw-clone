@@ -1,13 +1,13 @@
 {
-  "name": "netdraw-clone",
+  "name": "otdraw",
   "version": "1.0.0",
-  "description": "Zero-dependency single-file network diagram editor — clean-room clone of NetDraw",
+  "description": "Zero-dependency single-file OT/ICS topology diagram editor",
   "private": true,
   "scripts": {
     "test": "node test/run-tests.js",
     "audit": "node test/audit.mjs"
   },
   "devDependencies": {
-    "playwright": "^1.62.1"
+    "playwright": "^1.62.0"
   }
 }

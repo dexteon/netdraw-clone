@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NetDraw — Network Diagrams</title>
+<title>OTDraw — OT/ICS Topology Diagrams</title>
 <style>
 :root{
   --bg:#0b1120; --panel:#0f1626; --panel2:#131c30;
@@ -147,7 +147,7 @@ body.presenting #canvasWrap{position:absolute;inset:0}
         <circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="18" r="2.4"/><circle cx="19" cy="18" r="2.4"/>
         <path d="M10.8 7.1 6.2 16.1M13.2 7.1l4.6 9M7.4 18h9.2"/>
       </svg>
-      NetDraw <span class="sub">network diagrams</span>
+      OTDraw <span class="sub">OT / ICS topology</span>
     </div>
     <div class="tgroup" id="tools">
       <button data-tool="select" class="active" title="Select / Move (V)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M5 3l14 8.5-6.2 1.4L9.5 19z"/></svg></button>
@@ -232,11 +232,27 @@ body.presenting #canvasWrap{position:absolute;inset:0}
 /* ===================== constants & catalogs ===================== */
 const NW=104, NH=74, GRID=26, SNAP=13, LANE_SNAP=22, SNEAK_LANE_SNAP=5, SNEAK_LOOP=1.6;
 const SVGNS='http://www.w3.org/2000/svg';
-const LS_KEY='netdraw.doc.v1';
+const LS_KEY='otdraw.doc.v1';
 const SWATCHES=['#38bdf8','#60a5fa','#a78bfa','#c084fc','#f472b6','#f87171','#fb923c','#fbbf24','#34d399','#2dd4bf','#94a3b8'];
 const ZONE_COLORS=['#38bdf8','#a78bfa','#34d399','#f59e0b','#f472b6','#2dd4bf','#f87171','#c084fc'];
 /* ICONS: key -> inner SVG markup (24x24 viewBox, stroke-based, consumed by ic()) */
 const ICONS={
+/* OT / ICS devices */
+plc:'<rect x="4" y="7" width="16" height="12" rx="2"/><path d="M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01"/><path d="M9 7V4M15 7V4"/>',
+rtu:'<rect x="3" y="9" width="18" height="9" rx="2"/><path d="M7 13h.01M11 13h.01M15 13h.01M19 13h.01"/><path d="M6 9V5M10 9V5M14 9V5M18 9V5"/>',
+hmi:'<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M9 21h6M12 17v4"/><path d="M7 9h4M7 12h7"/>',
+ied:'<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8v8H8z"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>',
+vfd:'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8l4-2v8l-4-2z"//><circle cx="12" cy="15" r="2.5"/><path d="M8 3v18M16 3v18"/>',
+motor:'<circle cx="8" cy="12" r="5"/><path d="M13 12h7M17 9v6"/><path d="M8 7V4M8 17v3M3 12H1M13 12h2"/>',
+sensor:'<circle cx="12" cy="12" r="2.5"/><path d="M12 5a7 7 0 0 1 7 7M12 2a10 10 0 0 1 10 10"/><path d="M12 19a7 7 0 0 1-7-7M12 22a10 10 0 0 1-10-10"/>',
+actuator:'<circle cx="6" cy="12" r="3"/><path d="M9 12h4"/><rect x="13" y="8" width="8" height="8" rx="1.5"/><path d="M16 8V5"/>',
+valve:'<path d="M4 12h5M15 12h5"/><path d="M9 7l6 10M9 17l6-10"/><circle cx="12" cy="12" r="1.5"/>',
+historian:'<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/><path d="M8 8v6"/>',
+engworkstation:'<rect x="3" y="5" width="18" height="11" rx="1.5"/><path d="M9 20h6M12 16v4"/><path d="M6 13l2.5-2.5 2 2L14 9l3 3"/>',
+jumper:'<rect x="3" y="8" width="18" height="9" rx="2"/><path d="M7 12.5h.01M10 12.5h.01M13 12.5h.01M16 12.5h.01"/><path d="M12 3v5"/>',
+conveyor:'<circle cx="5" cy="17" r="2.5"/><circle cx="12" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M5 14.5V9h14v5.5"/><rect x="9" y="4" width="6" height="5" rx="1"/>',
+safetyrelay:'<rect x="5" y="6" width="14" height="13" rx="2"/><path d="M12 6V3"/><path d="M9 11l3 3 3-3"/><path d="M9 16h6"/>',
+ historianplaceholder:'',
 internet:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.7 2.6 4 5.6 4 9s-1.3 6.4-4 9c-2.7-2.6-4-5.6-4-9s1.3-6.4 4-9z"/>',
 cloud:'<path d="M7 18a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17 8.6 3.8 3.8 0 0 1 16.8 16H7z"/>',
 router:'<circle cx="12" cy="12" r="7.5"/><path d="M12 4.5v15M4.5 12h15M6.8 6.8c3 3 7.4 3 10.4 0M6.8 17.2c3-3 7.4-3 10.4 0"/>',
@@ -299,6 +315,8 @@ c2:'<circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="
 /* TYPES: key -> {cat, shape, icon-ref-by-key} */
 function T(cat,shape,color){return{cat,shape,color};}
 const TYPE_COLORS={
+  plc:'#fb923c',rtu:'#fb923c',hmi:'#fbbf24',ied:'#fb923c',vfd:'#f97316',motor:'#f97316',sensor:'#2dd4bf',actuator:'#f97316',valve:'#f97316',
+  historian:'#34d399',engworkstation:'#fbbf24',jumper:'#94a3b8',conveyor:'#94a3b8',safetyrelay:'#ef4444',
   internet:'#38bdf8',cloud:'#38bdf8',router:'#60a5fa',switch:'#a78bfa',wifi:'#38bdf8',asn:'#38bdf8',ipaddress:'#38bdf8',
   firewall:'#f87171',waf:'#f87171',proxy:'#fb923c',
   server:'#34d399',database:'#34d399',nas:'#2dd4bf',san:'#2dd4bf',datastore:'#34d399',fileservice:'#2dd4bf',
@@ -311,6 +329,7 @@ const TYPE_COLORS={
 };
 function typeColor(type){return TYPE_COLORS[type]||SWATCHES[0];}
 const TYPES={
+plc:T('OT / ICS','card'),rtu:T('OT / ICS','card'),hmi:T('OT / ICS','card'),ied:T('OT / ICS','card'),vfd:T('OT / ICS','card'),motor:T('OT / ICS','card'),sensor:T('OT / ICS','card'),actuator:T('OT / ICS','card'),valve:T('OT / ICS','card'),historian:T('OT / ICS','card'),engworkstation:T('OT / ICS','card'),jumper:T('OT / ICS','card'),conveyor:T('OT / ICS','card'),safetyrelay:T('OT / ICS','card'),
 internet:T('Network','card'),cloud:T('Network','card'),router:T('Network','card'),switch:T('Network','card'),wifi:T('Network','card'),asn:T('Network','card'),ipaddress:T('Network','card'),
 firewall:T('Security & Edge','card'),waf:T('Security & Edge','card'),proxy:T('Security & Edge','card'),cdn:T('Security & Edge','card'),loadbalancer:T('Security & Edge','card'),apigateway:T('Security & Edge','card'),
 server:T('Servers','card'),webserver:T('Servers','card'),appserver:T('Servers','card'),mgmtserver:T('Servers','card'),updateserver:T('Servers','card'),backupserver:T('Servers','card'),telephony:T('Servers','card'),hypervisor:T('Servers','card'),
@@ -321,7 +340,7 @@ org:T('Places & Orgs','card'),building:T('Places & Orgs','card'),city:T('Places 
 startend:T('Process Flow','flow'),process:T('Process Flow','flow'),decision:T('Process Flow','flow'),dataio:T('Process Flow','flow'),document:T('Process Flow','flow'),predefined:T('Process Flow','flow'),preparation:T('Process Flow','flow'),manualinput:T('Process Flow','flow'),delay:T('Process Flow','flow'),connector:T('Process Flow','flow'),
 threatactor:T('Threats','card'),insider:T('Threats','card'),malware:T('Threats','card'),ransomware:T('Threats','card'),botnet:T('Threats','card'),phishing:T('Threats','card'),c2:T('Threats','card'),
 };
-const PALETTE_GROUPS=['Network','Security & Edge','Servers','Storage & Data','Endpoints','People & Misc','Places & Orgs','Process Flow','Threats'];
+const PALETTE_GROUPS=['OT / ICS','Network','Security & Edge','Servers','Storage & Data','Endpoints','People & Misc','Places & Orgs','Process Flow','Threats'];
 const EFFECTS={halo:{label:'Halo'},animated:{label:'Animated'}};
 /* ===================== state ===================== */
 let nid=1,eid=1,zid=1;
@@ -1037,19 +1056,21 @@ $('#btnIngest').onclick=openIngestModal;
 function sampleState(){
   return{
     nodes:[
-      {id:'n1',type:'router',x:120,y:120,label:'edge-router',color:'#38bdf8',meta:{},fx:{}},
-      {id:'n2',type:'firewall',x:320,y:120,label:'fw-dmz-01',color:'#f87171',meta:{},fx:{}},
-      {id:'n3',type:'switch',x:520,y:120,label:'sw-core-01',color:'#a78bfa',meta:{},fx:{}},
-      {id:'n4',type:'server',x:320,y:300,label:'app-01',color:'#34d399',meta:{},fx:{}},
-      {id:'n5',type:'workstation',x:520,y:300,label:'eng-ws-02',color:'#fbbf24',meta:{},fx:{}},
+      {id:'n1',type:'internet',x:100,y:120,label:'Enterprise IT',color:'#38bdf8',meta:{},fx:{}},
+      {id:'n2',type:'firewall',x:300,y:120,label:'fw-ind-01',color:'#f87171',meta:{},fx:{}},
+      {id:'n3',type:'switch',x:500,y:120,label:'sw-prod-01',color:'#a78bfa',meta:{},fx:{}},
+      {id:'n4',type:'plc',x:280,y:300,label:'PLC-101',color:'#fb923c',meta:{proto:'Modbus/TCP'},fx:{}},
+      {id:'n5',type:'hmi',x:480,y:300,label:'HMI-01',color:'#fbbf24',meta:{proto:'OPC-UA'},fx:{}},
+      {id:'n6',type:'historian',x:660,y:300,label:'HIST-01',color:'#34d399',meta:{db:'SQL Server'},fx:{}},
     ],
     edges:[
       {id:'e1',a:'n1',b:'n2',dash:'solid',mode:'curve',anim:true,label:''},
       {id:'e2',a:'n2',b:'n3',dash:'solid',mode:'curve',anim:true,label:''},
-      {id:'e3',a:'n3',b:'n4',dash:'solid',mode:'curve',anim:true,label:''},
-      {id:'e4',a:'n3',b:'n5',dash:'solid',mode:'curve',anim:false,label:''},
+      {id:'e3',a:'n3',b:'n4',dash:'solid',mode:'curve',anim:true,label:'Modbus'},
+      {id:'e4',a:'n3',b:'n5',dash:'solid',mode:'curve',anim:false,label:'OPC-UA'},
+      {id:'e5',a:'n3',b:'n6',dash:'solid',mode:'curve',anim:false,label:''},
     ],
-    zones:[{id:'z1',x:80,y:80,w:640,h:360,label:'DMZ',color:'#38bdf8',kind:'zone',lanes:['Lane 1'],orient:'h'}],
+    zones:[{id:'z1',x:240,y:250,w:560,h:200,label:'Process Control Network',color:'#fb923c',kind:'zone',lanes:['Lane 1'],orient:'h'}],
     journey:{steps:[]},
   };
 }
@@ -1076,7 +1097,7 @@ function flowState(){
   };
 }
 const EXAMPLES=[
-  {name:'DMZ Demo',build:sampleState},
+  {name:'ICS Demo',build:sampleState},
   {name:'Process Flow',build:flowState},
 ];
 function buildExamplesMenu(){
@@ -1120,7 +1141,7 @@ $('#gridRect').style.display='none';
 })();
 /* ===================== export module (Phase 2 plan 02-01) ===================== */
 const GIF_FRAMES=20, GIF_DELAY_CS=8;
-function cloneLayerMarkup(layerEl,t){
+function exportLayerMarkup(layerEl,t){
   const c=layerEl.cloneNode(true);
   c.querySelectorAll('.ports,.zhandle').forEach(e=>e.remove());
   if(t!=null){
@@ -1136,7 +1157,7 @@ function buildDiagramSVG(t){
   let defs='<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#3b4a68"/></marker><marker id="arrowSel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7dd3fc"/></marker></defs>';
   return '<svg xmlns="http://www.w3.org/2000/svg" width="'+w+'" height="'+h+'" viewBox="'+x+' '+y+' '+w+' '+h+'">'+
     defs+'<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'" fill="#0b1120"/>'+
-    cloneLayerMarkup(gZ,t)+cloneLayerMarkup(gE,t)+cloneLayerMarkup(gN,t)+'</svg>';
+    exportLayerMarkup(gZ,t)+exportLayerMarkup(gE,t)+exportLayerMarkup(gN,t)+'</svg>';
 }
 function buildExportSVG(){
   const savedSel=sel;sel=null;renderAll();
@@ -1401,7 +1422,7 @@ function buildLiveFrameSVG(cssW,cssH,physW,physH,t){
   return '<svg xmlns="http://www.w3.org/2000/svg" width="'+physW+'" height="'+physH+'" viewBox="0 0 '+cssW+' '+cssH+'">'+
     defs+'<rect width="'+cssW+'" height="'+cssH+'" fill="#0b1120"/>'+
     '<g transform="translate('+view.x+','+view.y+') scale('+view.k+')">'+
-    cloneLayerMarkup(gZ,t)+cloneLayerMarkup(gE,t)+cloneLayerMarkup(gN,t)+'</g></svg>';
+    exportLayerMarkup(gZ,t)+exportLayerMarkup(gE,t)+exportLayerMarkup(gN,t)+'</g></svg>';
 }
 async function startRecording(audioMode,musicFile,fmt){
   if(recording){toast('Already recording');return;}
@@ -2039,9 +2060,9 @@ function applyIngest(parsed,mode){
 const MAX_PUML_DEPTH=64;
 const PUML_STEREOTYPE_MAP={
   database:'database',node:'server',cloud:'cloud',actor:'person',queue:'server',
-  artifact:'document',boundary:'process',control:'process',entity:'process',
-  card:'workstation',collections:'workstation',frame:'org',folder:'org',
-  interface:'connector',component:'workstation',usecase:'process',storage:'nas',
+  artifact:'document',boundary:'process',control:'plc',entity:'rtu',
+  card:'hmi',collections:'workstation',frame:'org',folder:'org',
+  interface:'connector',component:'plc',usecase:'process',storage:'historian',
   rectangle:'server',stack:'server',
 };
 const PUML_KEYWORDS=Object.keys(PUML_STEREOTYPE_MAP).sort((a,b)=>b.length-a.length);
