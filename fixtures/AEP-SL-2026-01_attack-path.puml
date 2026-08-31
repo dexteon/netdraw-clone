@@ -1,0 +1,151 @@
+@startuml
+' ============================================================================
+' Southlake SOLKTXES — AEP-SL-2026-01 Attack Path Overlay
+' Base: zone/conduit topology from Scenarios.docx (IEC 62443 mapping)
+' Overlay: VPN assumed-breach emulation "SILENT CASCADE", phases P1–P6
+' Colors:  red solid = live emulation (read-only at target)
+'          red thick = compromise / pivot / exfil
+'          orange dotted = LAB / maintenance-window only
+'          gray dotted  = tabletop only — never live
+'          green dotted = conduit contract (as-designed, unvalidated)
+' ============================================================================
+skinparam linetype polyline
+skinparam nodesep 45
+skinparam ranksep 60
+skinparam BoxPadding 8
+skinparam defaultTextAlignment center
+skinparam packageStyle rectangle
+skinparam PackageBorderColor #334E68
+skinparam RectangleBorderColor #243B53
+skinparam ArrowColor #627D98
+skinparam ArrowFontColor #102A43
+skinparam ArrowFontSize 9
+skinparam NoteBackgroundColor #FFF9C4
+skinparam NoteBorderColor #B7791F
+
+title <b>Southlake SOLKTXES — VPN Assumed-Breach Attack Path</b>\n<size:11>AEP-SL-2026-01 “SILENT CASCADE” (SL-T 3) over IEC 62443 zone model</size>\n<size:10>red = live read-only · bold red = compromise/pivot/exfil · orange = LAB/maint-window · gray = tabletop · green = conduit (as-designed)</size>
+
+' ---------------- ATTACKER ----------------
+rectangle "<b>SILENT CASCADE</b>\nRed team APT emulation\nPhases P1–P6" as APT #FFCDD2
+rectangle "<b>Enterprise VPN session</b>\n<b>ASSUMED BREACH</b>\n(valid creds — no exploit)" as VPN #FFCDD2
+
+' ---------------- ZONE 0 ----------------
+package "Zone 0 — Perimeter & Edge Ingress" #F0F4F8 {
+  rectangle "GTS / WAN\nAS 65000" as GTS #FFF9C4
+  rectangle "SOLKTXESGR7\nC9K · IOS-XE 17.12.05" as GR7 #FFF9C4
+  rectangle "FW3/FW4 (PA HA)\nvsys2 EDN-IT\nvsys3 VGMN-GCP" as FW #FFF9C4
+  rectangle "S81W / S82W\nNCS-6008 edge" as EDGE #FFF9C4
+  rectangle "GCP tenant\n(V2 variant)" as GCP #FFE0B2
+}
+
+' ---------------- ZONE 1 ----------------
+package "Zone 1 — Network Enforcement [SL-3]" #EBF3FA {
+  rectangle "<b>SOLKTXESZ6Y</b>\nActive core · VRRP Master\nSVIs: 55 / 11 / 111 / 913 / 917" as Z6Y #B3E5FC
+  rectangle "SOLKTXESZ6Z\nStandby core" as Z6Z #B3E5FC
+  rectangle "Z64/Z65 DC-Access\nZ6K–Z6N NEC Distribution" as DIST #D9E2EC
+}
+
+' ---------------- ZONE 2 ----------------
+package "Zone 2 — Shared Infrastructure [SL-2]" #E0F2F1 {
+  rectangle "Telco Desktop Stack\nZ7U–Z7X · office VLANs 82-91" as DKTP #80CBC4
+  rectangle "<b>NIAGARA 10.215.205.35</b>\nVLAN 55 · BMS head-end\nHTTP/JSESSIONID · Fox/1911" as NIAG #4DB6AC
+  rectangle "NetScout MGMT\nVIP 10.133.79.1 (VLAN 14)" as NSC #4DB6AC
+  rectangle "NTP .236/.237\nSyslog · STRM 10.133.3.225" as TIMESRV #4DB6AC
+}
+
+' ---------------- ZONE 3 ----------------
+package "Zone 3 — Aux Facility Control [SL-3]" #FFEBEE {
+  rectangle "<b>CHILLER 11-15 / MCC1-4</b>\nModbus TCP · BACnet\nVLAN 111 (flat) · VLAN 8 DDC" as CHIL #FF8A65
+  rectangle "CRAC Power Meters\nSNMP v1/v2c cleartext\nVLAN 11" as METER #FF8A65
+  rectangle "EDNv6 power strips\nREST / SNMP write\nVLAN 913" as STRIP #FF8A65
+  rectangle "AutoControl\nUPS bypass · SWGR trip\nVLAN 917" as AUTO #FF8A65
+}
+
+' ---------------- ZONE 4 / 5 ----------------
+package "Zone 4 — Core Process [SL-4]" #F8BBD0 {
+  rectangle "Galaxy Controller\nTelnet/23 · no MFA\nVLAN 15 / 62" as GAL #F48FB1
+}
+package "Zone 5 — Power Continuity [SL-4]" #FFF3E0 {
+  rectangle "UPS 1A1–1A4 · GEN 1–8\nSG-3/4 · G179 SWGR-MA\nPDU B01–B11 · RPPs" as PWR #FFB74D
+}
+
+' ================= BASE CONNECTIVITY (as-built, simplified) =================
+GTS <--> GR7
+GR7 <--> FW
+FW <--> EDGE
+EDGE <--> Z6Y
+Z6Y <--> Z6Z : Po100
+Z6Y <--> DIST : Po101-116
+Z6Y <--> DKTP : Po107-110
+Z6Y --> NIAG : VLAN 55 SVI
+DIST --> CHIL : VLAN 111
+DIST --> PWR
+Z6Y --> GAL
+
+' ================= CONDUITS (as-designed, unvalidated) =================
+NIAG .[#00695C].> CHIL : <color:#00695C><b>C-05</b> OPC UA/BACnet\nminimal services
+NIAG .[#00695C].> GAL : <color:#00695C><b>C-06</b> one-way\nhistorian
+Z6Y .[#00695C].> PWR : <color:#00695C><b>C-04</b> HTTPS/SSH\nSNMP RO
+
+' ================= ATTACK PATH (AEP-SL-2026-01) =================
+APT -[#B71C1C,thickness=4]-> VPN : <b>P0</b> grant
+VPN -[#B71C1C,thickness=4]-> DKTP : <b>P1</b> FOOTHOLD\ncred harvest (non-SSO BAS)
+DKTP -[#B71C1C]-> NSC : <b>P1</b> RECON\nsteal flow-map via SNMP
+DKTP -[#B71C1C,thickness=4]-> Z6Y : <b>P2</b> CROSSOVER\nrouted SVI — NO internal FW
+Z6Y -[#B71C1C,thickness=4]-> NIAG : <b>P2</b> COMPROMISE\nJSESSIONID / cred replay
+NIAG -[#B71C1C]-> CHIL : <b>P3</b> point-DB dump + FC03 enum (reads)\n<b>P5-A/B</b> mass stop · FC05/16
+NIAG -[#B71C1C]-> METER : <b>P3</b> telemetry cadence\n(60 s updates)
+NIAG -[#B71C1C]-> GAL : <b>P2-alt</b> Telnet probe\nvia permissive NOC rule
+NIAG .[#E65100].> STRIP : <b>P2</b> REST GET (live)\n<b>P5-E</b> outlet kill (LAB)
+NIAG ..[#9E9E9E].> AUTO : <b>P5-D</b> UPS bypass + SWGR trip\n<b>TABLETOP ONLY</b>
+NIAG -[#B71C1C]-> TIMESRV : <b>P6</b> NTP subversion (TT)\nlog-tamper survey (read)
+NIAG -[#B71C1C,thickness=4]-> VPN : <b>P6</b> EXFIL\npoint DB + site maps
+GCP .[#E65100].> FW : <b>V2</b> eBGP ae1.31\nuninspected ingress
+APT .[#7B1FA2].> DKTP : <b>V1</b> rogue device\n(Z6K wall port)
+
+' ================= PHASE NOTES =================
+note as P3N
+<b>P3 — TARGET DEVELOPMENT</b> (all read-only)
+Dump Niagara point/tag DB → complete register map
+(coil 100 enable · reg 105 setpoint · interlock flags)
+with <b>zero packets to field devices</b>. FC03/BACnet
+polls originate FROM Niagara — invisible without
+FC-distribution baseline (does not exist yet).
+end note
+
+note as P5N
+<b>P5 — EXECUTION MENU</b>
+A chiller stop via Niagara (LAB)
+B Modbus FC05/16 writes (LAB)
+C masked thermal event, 50kW replay (TT)
+D UPS bypass + SWGR trip (TT — never live)
+E rack outlet kill (LAB strip)
+F VRRP master hijack (LAB / maint window)
+G unsigned firmware load (LAB)
+end note
+
+note as P4N
+<b>P4 — BLIND THE NOC</b>
+VRRP advertisement capture on VLAN 55
+(auth check — passive, no forged adverts live)
+end note
+
+legend right
+<b>LEGEND</b>
+<color:#627D98><b>——</b></color> base connectivity (as-built)
+<color:#00695C>---- </color>conduit contract (as-designed)
+<color:#B71C1C>——</color> live emulation — read-only at target
+<color:#B71C1C><b>——</b></color> compromise / pivot / exfil
+<color:#E65100>----</color> LAB / maintenance-window only
+<color:#9E9E9E>----</color> tabletop only — never live
+<color:#7B1FA2>----</color> variant start (V1 rogue device)
+--
+<b>P1</b> foothold · <b>P2</b> OT crossover
+<b>P3</b> target dev (read-only)
+<b>P4</b> blind the NOC
+<b>P5</b> execution menu A–G
+<b>P6</b> persist / cover tracks / exfil
+endlegend
+
+caption AEP-SL-2026-01 · VPN assumed breach → Niagara pivot → OT execution\nInternal Use Only — Exercise Planning Document
+@enduml
