@@ -74,6 +74,9 @@ g.nodeg:hover .ports{opacity:1}
 .edge.sel .vis{stroke:#7dd3fc}
 .vis.anim{animation:dashflow .8s linear infinite}
 @keyframes dashflow{to{stroke-dashoffset:-28}}
+/* flowing particle: small glowing dot travels along the edge path via SMIL animateMotion */
+.edge .flow-dot{opacity:0}
+.edge.has-flow .flow-dot{opacity:.85}
 #hintbar{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
   background:rgba(15,22,38,.85);border:1px solid var(--border);border-radius:99px;
   padding:6px 16px;font-size:11px;color:var(--faint);pointer-events:none;white-space:nowrap}
@@ -186,6 +189,7 @@ body.presenting #canvasWrap{position:absolute;inset:0}
           <filter id="nodeShadow" x="-40%" y="-40%" width="180%" height="180%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#000000" flood-opacity="0.42"/></filter>
           <marker id="arrow" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0.5 1.2 L8.5 5 L0.5 8.8 z" fill="context-stroke"/></marker>
           <marker id="arrowSel" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0.5 1.2 L8.5 5 L0.5 8.8 z" fill="#7dd3fc"/></marker>
+          <filter id="flowGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.5"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
         </defs>
         <rect id="gridRect" width="100%" height="100%" fill="url(#gridPat)" style="display:none"/>
         <g id="worldG"><g id="gZones"></g><g id="gEdges"></g><g id="gNodes"></g><g id="gTemp"></g><g id="gUI"></g></g>
@@ -420,7 +424,7 @@ function addZone(x,y,w,h,label,color,kind){
 function addEdge(aId,bId){
   if(aId===bId)return;
   if(state.edges.some(e=>(e.a===aId&&e.b===bId)||(e.a===bId&&e.b===aId)))return;
-  state.edges.push({id:'e'+(eid++),a:aId,b:bId,dash:'solid',mode:'curve',anim:false,label:''});
+  state.edges.push({id:'e'+(eid++),a:aId,b:bId,dash:'solid',mode:'straight',anim:false,label:''});
   commit();renderAll();
 }
 function deleteSelection(){
@@ -451,14 +455,25 @@ function edgeGeom(a,b,mode){
   const aN=nodeById(a),bN=nodeById(b);if(!aN||!bN)return null;
   const p1=anchor(aN,bN),p2=anchor(bN,aN);
   if(mode==='ortho'){
-    const mx=(p1.x+p2.x)/2;
-    return{d:`M ${p1.x} ${p1.y} L ${mx} ${p1.y} L ${mx} ${p2.y} L ${p2.x} ${p2.y}`,p1,p2};
+    /* orthogonal: L-bend via midpoint, favoring the dominant axis */
+    const dx=p2.x-p1.x,dy=p2.y-p1.y;
+    if(Math.abs(dx)>=Math.abs(dy)){
+      const mx=p1.x+dx/2;
+      return{d:`M ${p1.x} ${p1.y} L ${mx} ${p1.y} L ${mx} ${p2.y} L ${p2.x} ${p2.y}`,p1,p2,mid:{x:mx,y:(p1.y+p2.y)/2}};
+    }else{
+      const my=p1.y+dy/2;
+      return{d:`M ${p1.x} ${p1.y} L ${p1.x} ${my} L ${p2.x} ${my} L ${p2.x} ${p2.y}`,p1,p2,mid:{x:(p1.x+p2.x)/2,y:my}};
+    }
   }
+  if(mode==='straight'){
+    return{d:`M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`,p1,p2,mid:{x:(p1.x+p2.x)/2,y:(p1.y+p2.y)/2}};
+  }
+  /* curve (default for interactive drawing) */
   const dx=p2.x-p1.x,dy=p2.y-p1.y;
   let c1,c2;
   if(Math.abs(dx)>=Math.abs(dy)){c1={x:p1.x+dx*0.4,y:p1.y};c2={x:p2.x-dx*0.4,y:p2.y};}
   else{c1={x:p1.x,y:p1.y+dy*0.4};c2={x:p2.x,y:p2.y-dy*0.4};}
-  return{d:`M ${p1.x} ${p1.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p2.x} ${p2.y}`,p1,p2};
+  return{d:`M ${p1.x} ${p1.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p2.x} ${p2.y}`,p1,p2,mid:{x:(p1.x+3*c1.x+3*c2.x+p2.x)/8,y:(p1.y+3*c1.y+3*c2.y+p2.y)/8}};
 }
 function dashFor(e){
   switch(e.dash){
@@ -580,8 +595,18 @@ function renderEdge(e){
   const vis=el('path',{class:'vis'+(e.anim&&!sneak?' anim':''),d:gm.d,fill:'none',stroke:on?'#7dd3fc':(sneak?'#6b6242':'#526180'),'stroke-width':on?2.4:(sneak?1.5:2),'stroke-linecap':'round','marker-end':on?'url(#arrowSel)':'url(#arrow)'});
   const d=dashFor(e);if(d)vis.setAttribute('stroke-dasharray',d);
   g.appendChild(vis);
+  /* flowing particle: glowing dot travels along the edge path (data-flow direction) */
+  if(e.anim&&!sneak&&!dimmed){
+    g.classList.add('has-flow');
+    const dot=el('circle',{class:'flow-dot',cx:0,cy:0,r:3.5,fill:'#7dd3fc',filter:'url(#flowGlow)'});
+    const am=document.createElementNS(SVGNS,'animateMotion');
+    am.setAttribute('dur','2.4s');am.setAttribute('repeatCount','indefinite');
+    am.setAttribute('path',gm.d);am.setAttribute('rotate','auto');
+    dot.appendChild(am);
+    g.appendChild(dot);
+  }
   if(e.label){
-    const mx=(gm.p1.x+gm.p2.x)/2,my=(gm.p1.y+gm.p2.y)/2;
+    const mx=gm.mid?gm.mid.x:(gm.p1.x+gm.p2.x)/2,my=gm.mid?gm.mid.y:(gm.p1.y+gm.p2.y)/2;
     const t=el('text',{});t.textContent=e.label;
     const tw=t.getBBox?t.getBBox().width+10:50;t.textContent='';
     g.appendChild(el('rect',{x:mx-tw/2,y:my-10,width:tw,height:20,rx:9,fill:'#0c1424',stroke:'#24304d','stroke-width':1}));
@@ -1007,7 +1032,7 @@ function applyLoadedDoc(doc){
     id:String(e.id||''),a:String(e.a||''),b:String(e.b||''),
     label:e.label!=null?String(e.label):'',
     dash:['solid','dashed','dotted','sneakernet','animated'].includes(e.dash)?e.dash:'solid',
-    mode:e.mode==='ortho'?'ortho':'curve',
+    mode:e.mode==='curve'?'curve':'straight',
     anim:!!e.anim,
   }));
   const nz=doc.zones.map(z=>({
@@ -2179,6 +2204,7 @@ function parseArrow(line){
     toAlias:pumlSanitizeAlias(side(rawTo)),
     label:pumlStripCreole(m[9]||''),
     style,
+    dir:m[5]||null,
   };
 }
 function pumlParse(text){
@@ -2186,6 +2212,9 @@ function pumlParse(text){
   const byAlias=new Map();
   const stack=[];
   let declCount=0;
+  /* detect skinparam linetype ortho → route imported edges orthogonally */
+  let ortho=false;
+  if(/^\s*skinparam\s+linetype\s+ortho\s*$/im.test(text)||/\bskinparam\s+linetype\s+ortho\b/i.test(text)){ortho=true;}
   const BLOCK_KEYWORDS=['cloud','folder','rectangle','frame','node','stack','package','database','component'];
   for(const line of normalizeLines(text)){
     /* skip directives & noise (collected as warnings later if unrecognized) */
@@ -2261,10 +2290,130 @@ function pumlParse(text){
     }
     return a;
   }
-  return{zones,nodes,edges,warnings};
+  return{zones,nodes,edges,warnings,ortho};
 }
+/* ===================== layered layout engine (Sugiyama-style, PlantUML/ELK-inspired) =====================
+   Ranks ALL nodes globally via directed edges + direction hints (down/up/left/right),
+   orders within ranks via barycenter crossing minimization, assigns coordinates,
+   routes edges orthogonally. Zones (packages/folders) are rendered as bounding
+   rectangles around their members after positioning. Own implementation — MIT.
+   ================================================================================================== */
+const LAYER_GAP=100,X_GAP=44,LABEL_PAD=34;
+function layeredLayout(nodes,edges,opts){
+  opts=opts||{};
+  const N=new Map();nodes.forEach(n=>N.set(n.alias,n));
+  const adj=new Map(),radj=new Map();
+  nodes.forEach(n=>{adj.set(n.alias,[]);radj.set(n.alias,[]);});
+  edges.forEach(e=>{
+    if(!N.has(e.a)||!N.has(e.b))return;
+    /* down/right/none → forward; up/left → backward */
+    const fwd=(e.dir==='down')||(e.dir==='right')||(e.dir==='left'&&false)||!e.dir;
+    if(e.dir==='up'||e.dir==='left'){adj.get(e.b).push(e.a);radj.get(e.a).push(e.b);}
+    else{adj.get(e.a).push(e.b);radj.get(e.b).push(e.a);}
+  });
+  /* ---- 1. rank assignment: longest-path topological sort with cycle breaking ---- */
+  const rank=new Map(nodes.map(n=>[n.alias,0]));
+  const indeg=new Map(nodes.map(n=>[n.alias,radj.get(n.alias).length]));
+  const Q=nodes.filter(n=>indeg.get(n.alias)===0).map(n=>n.alias);
+  const visited=new Set(Q);
+  while(Q.length){
+    const u=Q.shift();
+    for(const v of adj.get(u)){
+      rank.set(v,Math.max(rank.get(v),rank.get(u)+1));
+      indeg.set(v,indeg.get(v)-1);
+      if(indeg.get(v)===0&&!visited.has(v)){visited.add(v);Q.push(v);}
+    }
+  }
+  /* cycle leftovers: place after max predecessor */
+  for(const n of nodes){
+    if(!visited.has(n.alias)){
+      let mx=-1;radj.get(n.alias).forEach(p=>{if(rank.has(p))mx=Math.max(mx,rank.get(p));});
+      rank.set(n.alias,mx+1);visited.add(n.alias);
+    }
+  }
+  /* ---- 2. group by rank ---- */
+  const byRank=new Map();
+  nodes.forEach(n=>{
+    const r=rank.get(n.alias)||0;
+    if(!byRank.has(r))byRank.set(r,[]);
+    byRank.get(r).push(n.alias);
+  });
+  const ranks=[...byRank.keys()].sort((a,b)=>a-b);
+  /* ---- 3. barycenter ordering: 4 sweeps to minimize crossings ---- */
+  const order=new Map();
+  ranks.forEach(r=>order.set(r,byRank.get(r)));
+  const nbrUp=new Map(),nbrDn=new Map();
+  nodes.forEach(n=>{nbrUp.set(n.alias,[]);nbrDn.set(n.alias,[]);});
+  edges.forEach(e=>{
+    if(!N.has(e.a)||!N.has(e.b))return;
+    const ra=rank.get(e.a)||0,rb=rank.get(e.b)||0;
+    if(rb>ra){nbrDn.get(e.a).push(e.b);nbrUp.get(e.b).push(e.a);}
+    else if(ra>rb){nbrDn.get(e.b).push(e.a);nbrUp.get(e.a).push(e.b);}
+  });
+  function barycentric(arr,dir){
+    return arr.map(al=>{
+      const nb=dir==='up'?nbrUp.get(al):nbrDn.get(al);
+      if(!nb||!nb.length)return 0;
+      let s=0,c=0;
+      nb.forEach(n2=>{
+        const rr=ranks.find(r=>order.get(r).indexOf(n2)>=0);
+        if(rr!=null){s+=order.get(rr).indexOf(n2);c++;}
+      });
+      return c?s/c:0;
+    });
+  }
+  for(let sweep=0;sweep<4;sweep++){
+    for(let i=1;i<ranks.length;i++){
+      const cur=order.get(ranks[i]);
+      const b=barycentric(cur,'up');
+      const sorted=cur.map((al,j)=>[b[j],al]).sort((x,y)=>x[0]-y[0]);
+      order.set(ranks[i],sorted.map(p=>p[1]));
+    }
+    for(let i=ranks.length-2;i>=0;i--){
+      const cur=order.get(ranks[i]);
+      const b=barycentric(cur,'dn');
+      const sorted=cur.map((al,j)=>[b[j],al]).sort((x,y)=>x[0]-y[0]);
+      order.set(ranks[i],sorted.map(p=>p[1]));
+    }
+  }
+  /* ---- 4. coordinate assignment ---- */
+  const positions=new Map();
+  const rowWidths=new Map();
+  ranks.forEach(r=>{
+    const arr=order.get(r);
+    rowWidths.set(r,arr.reduce((s,al)=>s+(N.get(al).w||NW)+X_GAP,0)-X_GAP);
+  });
+  const maxRowW=Math.max(...ranks.map(r=>rowWidths.get(r)),NW);
+  ranks.forEach((r,ri)=>{
+    let x=(maxRowW-rowWidths.get(r))/2;
+    order.get(r).forEach(al=>{
+      positions.set(al,{x,y:ri*(NH+LAYER_GAP)});
+      x+=(N.get(al).w||NW)+X_GAP;
+    });
+  });
+  /* ---- 5. zone bounding rectangles ---- */
+  const zoneRects=new Map();
+  if(opts.zones){
+    for(const z of opts.zones){
+      const members=z.nodes||[];
+      if(!members.length)continue;
+      let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+      members.forEach(al=>{
+        const p=positions.get(al);if(!p)return;
+        const w=N.get(al).w||NW,h=N.get(al).h||NH;
+        minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);
+        maxX=Math.max(maxX,p.x+w);maxY=Math.max(maxY,p.y+h);
+      });
+      if(minX<Infinity){
+        zoneRects.set(z.alias,{x:minX-PAD,y:minY-PAD-LABEL_PAD,w:(maxX-minX)+PAD*2,h:(maxY-minY)+PAD*2+LABEL_PAD});
+      }
+    }
+  }
+  return{positions,zoneRects,ranks,order};
+}
+const PAD=24;
 function pumlLayout(parsed){
-  const NWL=NW+20,NHL=NH+20,ZONE_GAP=60,PAD=20,LABEL=30;
+  const NWL=NW+20,NHL=NH+20,ZONE_GAP=60,PAD=24,LABEL=30;
   const nodes=[],edges=[],zones=[];
   const idBase=Math.max(state.nodes.length+state.edges.length+state.zones.length,1000);
   let idn=idBase;
@@ -2297,59 +2446,43 @@ function pumlLayout(parsed){
     }
     if(z)nodeZone.set(n.alias,z.alias);
   }
-  /* zone → its nodes (direct + inherited from nested, flattened) */
+  /* zone → its nodes (flattened) */
   const zoneMembers=new Map();
   for(const z of parsed.zones)zoneMembers.set(z.alias,[]);
   for(const n of parsed.nodes){
     const za=nodeZone.get(n.alias);
     if(za&&zoneMembers.has(za))zoneMembers.get(za).push(n.alias);
   }
-  /* order zones deterministically: fewest members first, then alias order */
-  const zorder=parsed.zones.slice().sort((a,b)=>zoneMembers.get(a.alias).length-zoneMembers.get(b.alias).length||a.alias.localeCompare(b.alias));
-  let zx=100,zy=100,maxRowH=0;
-  const zoneAliasToRect=new Map();
-  for(const z of zorder){
-    const members=zoneMembers.get(z.alias)||[];
-    const cols=Math.max(1,Math.ceil(Math.sqrt(Math.max(members.length,1))));
-    const rows=Math.ceil(members.length/cols)||1;
-    const w=cols*NWL+PAD*2,h=rows*NHL+PAD*2+LABEL;
-    zoneAliasToRect.set(z.alias,{x:zx,y:zy,w,h});
-    members.forEach((ma,i)=>{
-      const idx=aliasToIdx.get(ma);
-      if(idx!=null){
-        nodes[idx].x=zx+PAD+(i%cols)*NWL;
-        nodes[idx].y=zy+PAD+LABEL+Math.floor(i/cols)*NHL;
-      }
-    });
-    const zi=zones.findIndex(zz=>zz.label===z.label&&zz.nodeIds!==undefined);
-    /* attach member ids to the zone object in our zones array via alias map */
+  /* ---- layered layout (Sugiyama): ranks follow edge direction, zones stacked vertically ---- */
+  const lay=layeredLayout(
+    parsed.nodes.map(n=>({alias:n.alias,label:n.label,w:NW,h:NH,zoneAlias:nodeZone.get(n.alias)||null})),
+    parsed.edges.map(e=>({a:e.a,b:e.b,dir:e.dir||null})),
+    {zones:parsed.zones.map(z=>({alias:z.alias,nodes:zoneMembers.get(z.alias)||[]}))}
+  );
+  /* place nodes using layered positions, with a global offset */
+  const OFF=120;
+  for(const n of parsed.nodes){
+    const p=lay.positions.get(n.alias);
+    const idx=aliasToIdx.get(n.alias);
+    if(p&&idx!=null){nodes[idx].x=OFF+p.x;nodes[idx].y=OFF+p.y;}
+  }
+  /* zone rects from layered engine, padded */
+  for(const z of parsed.zones){
+    const r=lay.zoneRects.get(z.alias);
     const zid=zoneIdByAlias.get(z.alias);
     const zobj=zones.find(zz=>zz.id===zid);
-    if(zobj){zobj.x=zx;zobj.y=zy;zobj.w=Math.max(w,140);zobj.h=Math.max(h,100);zobj.nodeIds=members.map(ma=>aliasToId.get(ma));}
-    maxRowH=Math.max(maxRowH,h);
-    zx+=w+ZONE_GAP;
-    if(zx>1400){zx=100;zy+=maxRowH+ZONE_GAP;maxRowH=0;}
-  }
-  /* unzoned nodes grid below all zones */
-  const unz=parsed.nodes.filter(n=>!nodeZone.has(n.alias));
-  const ucols=Math.ceil(Math.sqrt(Math.max(unz.length,1)))||1;
-  const urows=Math.ceil(unz.length/ucols)||1;
-  const ux0=100,uy0=zy+maxRowH+ZONE_GAP;
-  unz.forEach((n,i)=>{
-    const idx=aliasToIdx.get(n.alias);
-    if(idx!=null){
-      nodes[idx].x=ux0+(i%ucols)*NWL;
-      nodes[idx].y=uy0+Math.floor(i/ucols)*NHL;
+    if(r&&zobj){
+      zobj.x=OFF+r.x-PAD;zobj.y=OFF+r.y-PAD-LABEL;
+      zobj.w=r.w+PAD*2;zobj.h=r.h+PAD*2+LABEL;
     }
-  });
-  /* edges: map aliases to ids; drop dangling */
+  }
+  /* edges: map aliases → ids, orthogonal when linetype ortho, animated when direction hints exist */
   let ide=idBase;
   for(const e of parsed.edges){
     const aId=aliasToId.get(e.a),bId=aliasToId.get(e.b);
     if(!aId||!bId)continue;
-    edges.push({id:'e'+(ide++),a:aId,b:bId,dash:e.style==='dashed'?'dashed':'solid',mode:'curve',anim:false,label:e.label||''});
+    edges.push({id:'e'+(ide++),a:aId,b:bId,dash:e.style==='dashed'?'dashed':'solid',mode:parsed.ortho?'ortho':'straight',anim:!!e.dir||!!e.label,label:e.label||''});
   }
-  /* strip layout-only fields from zones */
   for(const z of zones)delete z.nodeIds;
   return{nodes,edges,zones};
 }
