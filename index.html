@@ -382,7 +382,9 @@ const zoneById=id=>state.zones.find(z=>z.id===id);
 function accentOf(n){return n.color||SWATCHES[0];}
 function nodeW(n){return TYPES[n.type]?.shape==='flow'?Math.max(80,(n.label||'').length*7+24):NW;}
 function nodeH(n){return TYPES[n.type]?.shape==='flow'?48:NH;}
-function metaLines(n){return n.meta?Object.entries(n.meta).filter(([k,v])=>v).map(([k,v])=>k+': '+v):[];}
+/* structural keys are shape/type hints from PUML import — never display them */
+const HIDDEN_META_KEYS=new Set(['pumlkind','pumlKind','stereotype']);
+function metaLines(n){return n.meta?Object.entries(n.meta).filter(([k,v])=>v&&!HIDDEN_META_KEYS.has(k)).map(([k,v])=>k+': '+v):[];}
 function inZone(x,y,z){return x>=z.x&&x<=z.x+z.w&&y>=z.y&&y<=z.y+z.h;}
 /* ===================== serialize / history ===================== */
 function serialize(){return JSON.stringify({nodes:state.nodes,edges:state.edges,zones:state.zones,journey:state.journey});}
