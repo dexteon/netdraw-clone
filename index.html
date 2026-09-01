@@ -2539,17 +2539,22 @@ function pumlParse(text){
       else if(!decl.bracket&&PUML_STEREOTYPE_MAP[decl.keyword])type=PUML_STEREOTYPE_MAP[decl.keyword];
       if(!type)type=pumlGuessType(decl.display||decl.alias||'');
       const alias=pumlSanitizeAlias(decl.alias||decl.display||decl.keyword+declCount);
-      /* split multi-line display (\n) into label + meta detail lines BEFORE stripCreole */
+      /* split multi-line display (\n) into label + meta detail lines BEFORE stripCreole.
+         Only a genuine "key: value" continuation line becomes structured meta — plain
+         continuation text (the common case) stays part of the label, joined with the
+         same " · " separator pumlStripCreole used before this split existed, so we
+         never fabricate a "lineN:" prefix in front of ordinary text. */
       const rawDisplay=decl.display||decl.alias||decl.keyword+' '+declCount;
       const parts=String(rawDisplay).split(/\\n|\n/).map(s=>pumlStripCreole(s)).filter(s=>s.length);
-      const label=parts[0]||pumlStripCreole(rawDisplay);
+      const labelParts=[parts[0]||pumlStripCreole(rawDisplay)];
       const meta={pumlKind:decl.keyword};
       if(decl.stereotype)meta.stereotype=decl.stereotype;
       for(let pi=1;pi<parts.length;pi++){
         const kv=parts[pi].match(/^([^:]{1,20}):\s*(.+)$/);
         if(kv)meta[kv[1].trim()]=kv[2].trim();
-        else meta['line'+pi]=parts[pi];
+        else labelParts.push(parts[pi]);
       }
+      const label=labelParts.join(' · ');
       const n={alias,type,label,meta,zoneAlias:stack.length?stack[stack.length-1].alias:null};
       nodes.push(n);
       byAlias.set(alias,n);
