@@ -2368,7 +2368,7 @@ function normalizeLines(text){
       if(ch==="'"&&!inQ&&(i===0||/\s/.test(line[i-1]))){cut=i;break;}
     }
     if(cut>=0)line=line.slice(0,cut);
-    line=line.replace(/\s/,'');
+    line=line.trim();
     if(line.trim())out.push(line.trim());
   }
   return out;
