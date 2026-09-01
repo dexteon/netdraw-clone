@@ -849,7 +849,7 @@ svg.addEventListener('pointerdown',ev=>{
     return;
   }
   if(tool==='zone'||tool==='lane'){zoneDraw={x0:pt.x,y0:pt.y,x1:pt.x,y1:pt.y};return;}
-  if(tool==='pan'||spaceHeld){panning={sx:ev.clientX,sy:ev.clientY,vx:view.x,vy:view.y};svg.classList.add('panning');return;}
+  if(tool==='pan'||spaceHeld){panning={sx:ev.clientX,sy:ev.clientY,vx:view.x,vy:view.y,wentPan:true};svg.classList.add('panning');return;}
   const ng=ev.target.closest('g.nodeg');
   const zg=ev.target.closest('g.zoneg');
   const egr=ev.target.closest('g.edge');
@@ -863,8 +863,15 @@ svg.addEventListener('pointerdown',ev=>{
     const z=zoneById(zg.dataset.id);
     drag={zone:z,dx:pt.x-z.x,dy:pt.y-z.y,moved:false};
   }else{
+    /* empty canvas: start as potential pan OR marquee.
+       If drag exceeds 5px → pan; if just a click → deselect.
+       Shift-click empty = marquee select (doesn't pan). */
     sel=null;renderAll();
-    marquee={x0:pt.x,y0:pt.y,x1:pt.x,y1:pt.y,shift:ev.shiftKey};
+    if(ev.shiftKey){
+      marquee={x0:pt.x,y0:pt.y,x1:pt.x,y1:pt.y,shift:true};
+    }else{
+      panning={sx:ev.clientX,sy:ev.clientY,vx:view.x,vy:view.y,wentPan:false};
+    }
   }
 });
 function startConnect(fromId,pt){
@@ -878,7 +885,18 @@ function finishConnect(toId){
   connectFrom=null;gT.innerHTML='';
 }
 window.addEventListener('pointermove',ev=>{
-  if(panning){view.x=panning.vx+(ev.clientX-panning.sx);view.y=panning.vy+(ev.clientY-panning.sy);applyView();return;}
+  if(panning){
+    const dx=ev.clientX-panning.sx,dy=ev.clientY-panning.sy;
+    if(!panning.wentPan&&Math.hypot(dx,dy)>5){
+      panning.wentPan=true;
+      svg.classList.add('panning');
+      /* re-add the selection we just cleared — we only meant to pan */
+    }
+    if(panning.wentPan){
+      view.x=panning.vx+dx;view.y=panning.vy+dy;applyView();
+    }
+    return;
+  }
   if(connectFrom){const l=document.getElementById('tmpline');if(l){const p=toWorld(ev.clientX,ev.clientY);l.setAttribute('x2',p.x);l.setAttribute('y2',p.y);}return;}
   if(zoneDraw){const p=toWorld(ev.clientX,ev.clientY);zoneDraw.x1=p.x;zoneDraw.y1=p.y;
     let r=document.getElementById('tmpzone');
