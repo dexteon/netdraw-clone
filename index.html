@@ -2310,126 +2310,291 @@ function pumlParse(text){
   }
   return{zones,nodes,edges,warnings,ortho};
 }
-/* ===================== layered layout engine (Sugiyama-style, PlantUML/ELK-inspired) =====================
-   Ranks ALL nodes globally via directed edges + direction hints (down/up/left/right),
-   orders within ranks via barycenter crossing minimization, assigns coordinates,
-   routes edges orthogonally. Zones (packages/folders) are rendered as bounding
-   rectangles around their members after positioning. Own implementation — MIT.
-   ================================================================================================== */
-const LAYER_GAP=100,X_GAP=44,LABEL_PAD=34;
+/* ===================== layered layout engine v3 (Sugiyama + zone bands) =====================
+   Zones become strictly stacked horizontal bands ordered by inter-zone edge flow
+   (topological zone ordering). Nested zones lay out side-by-side inside their parent.
+   Nodes rank within their own zone; barycenter ordering minimizes crossings.
+   Own implementation of published algorithms — MIT.
+   ============================================================================================ */
+const LAYER_GAP=100,X_GAP=44,LBL_PAD=34,ZPAD=26,ZGAP=70;
 function layeredLayout(nodes,edges,opts){
   opts=opts||{};
   const N=new Map();nodes.forEach(n=>N.set(n.alias,n));
-  const adj=new Map(),radj=new Map();
-  nodes.forEach(n=>{adj.set(n.alias,[]);radj.set(n.alias,[]);});
-  edges.forEach(e=>{
-    if(!N.has(e.a)||!N.has(e.b))return;
-    /* down/right/none → forward; up/left → backward */
-    const fwd=(e.dir==='down')||(e.dir==='right')||(e.dir==='left'&&false)||!e.dir;
-    if(e.dir==='up'||e.dir==='left'){adj.get(e.b).push(e.a);radj.get(e.a).push(e.b);}
-    else{adj.get(e.a).push(e.b);radj.get(e.b).push(e.a);}
+  /* direct-zone membership + zone tree */
+  const dZone=new Map();nodes.forEach(n=>dZone.set(n.alias,n.zoneAlias||null));
+  const zones=opts.zones||[];
+  const Z=new Map();zones.forEach(z=>Z.set(z.alias,z));
+  /* unzoned pseudo-zone */
+  const UNZ='@@unzoned';
+  Z.set(UNZ,{alias:UNZ,nodes:[],parentAlias:null});
+  zones.forEach(z=>{
+    if(z.parentAlias&&Z.has(z.parentAlias)){/* ok */}
   });
-  /* ---- 1. rank assignment: longest-path topological sort with cycle breaking ---- */
-  const rank=new Map(nodes.map(n=>[n.alias,0]));
-  const indeg=new Map(nodes.map(n=>[n.alias,radj.get(n.alias).length]));
-  const Q=nodes.filter(n=>indeg.get(n.alias)===0).map(n=>n.alias);
-  const visited=new Set(Q);
-  while(Q.length){
-    const u=Q.shift();
-    for(const v of adj.get(u)){
-      rank.set(v,Math.max(rank.get(v),rank.get(u)+1));
-      indeg.set(v,indeg.get(v)-1);
-      if(indeg.get(v)===0&&!visited.has(v)){visited.add(v);Q.push(v);}
+  const kids=new Map();zones.forEach(z=>kids.set(z.alias,[]));
+  const roots=[];
+  zones.forEach(z=>{
+    if(z.parentAlias&&Z.has(z.parentAlias))kids.get(z.parentAlias).push(z.alias);
+    else roots.push(z.alias);
+  });
+  /* forward direction of each edge (down/right/none → a→b; up/left → b→a) */
+  const fwdEdge=e=>{
+    if(e.dir==='up'||e.dir==='left')return{a:e.b,b:e.a};
+    return{a:e.a,b:e.b};
+  };
+  /* ---- 1. zone ordering: longest-path topo sort on inter-zone edge graph ---- */
+  const zAdj=new Map(),zRad=new Map();
+  zones.forEach(z=>{zAdj.set(z.alias,[]);zRad.set(z.alias,[]);});
+  zAdj.set(UNZ,[]);zRad.set(UNZ,[]);
+  for(const e of edges){
+    if(!N.has(e.a)||!N.has(e.b))continue;
+    const{a,b}=fwdEdge(e);
+    const za=dZone.get(a)||UNZ,zb=dZone.get(b)||UNZ;
+    if(za!==zb&&!zAdj.get(za).includes(zb)){zAdj.get(za).push(zb);zRad.get(zb).push(za);}
+  }
+  const zLvl=new Map();
+  const zDeg=new Map();[...zAdj.keys()].forEach(k=>zDeg.set(k,zRad.get(k).length));
+  const zQ=[...zAdj.keys()].filter(k=>zDeg.get(k)===0);
+  const zSeen=new Set(zQ);
+  while(zQ.length){
+    const u=zQ.shift();
+    for(const v of zAdj.get(u)){
+      zLvl.set(v,Math.max(zLvl.get(v)||0,(zLvl.get(u)||0)+1));
+      zDeg.set(v,zDeg.get(v)-1);
+      if(zDeg.get(v)===0&&!zSeen.has(v)){zSeen.add(v);zQ.push(v);}
     }
   }
-  /* cycle leftovers: place after max predecessor */
-  for(const n of nodes){
-    if(!visited.has(n.alias)){
-      let mx=-1;radj.get(n.alias).forEach(p=>{if(rank.has(p))mx=Math.max(mx,rank.get(p));});
-      rank.set(n.alias,mx+1);visited.add(n.alias);
-    }
-  }
-  /* ---- 2. group by rank ---- */
-  const byRank=new Map();
-  nodes.forEach(n=>{
-    const r=rank.get(n.alias)||0;
-    if(!byRank.has(r))byRank.set(r,[]);
-    byRank.get(r).push(n.alias);
-  });
-  const ranks=[...byRank.keys()].sort((a,b)=>a-b);
-  /* ---- 3. barycenter ordering: 4 sweeps to minimize crossings ---- */
-  const order=new Map();
-  ranks.forEach(r=>order.set(r,byRank.get(r)));
-  const nbrUp=new Map(),nbrDn=new Map();
-  nodes.forEach(n=>{nbrUp.set(n.alias,[]);nbrDn.set(n.alias,[]);});
-  edges.forEach(e=>{
-    if(!N.has(e.a)||!N.has(e.b))return;
-    const ra=rank.get(e.a)||0,rb=rank.get(e.b)||0;
-    if(rb>ra){nbrDn.get(e.a).push(e.b);nbrUp.get(e.b).push(e.a);}
-    else if(ra>rb){nbrDn.get(e.b).push(e.a);nbrUp.get(e.a).push(e.b);}
-  });
-  function barycentric(arr,dir){
-    return arr.map(al=>{
-      const nb=dir==='up'?nbrUp.get(al):nbrDn.get(al);
-      if(!nb||!nb.length)return 0;
-      let s=0,c=0;
-      nb.forEach(n2=>{
-        const rr=ranks.find(r=>order.get(r).indexOf(n2)>=0);
-        if(rr!=null){s+=order.get(rr).indexOf(n2);c++;}
-      });
-      return c?s/c:0;
-    });
-  }
-  for(let sweep=0;sweep<4;sweep++){
-    for(let i=1;i<ranks.length;i++){
-      const cur=order.get(ranks[i]);
-      const b=barycentric(cur,'up');
-      const sorted=cur.map((al,j)=>[b[j],al]).sort((x,y)=>x[0]-y[0]);
-      order.set(ranks[i],sorted.map(p=>p[1]));
-    }
-    for(let i=ranks.length-2;i>=0;i--){
-      const cur=order.get(ranks[i]);
-      const b=barycentric(cur,'dn');
-      const sorted=cur.map((al,j)=>[b[j],al]).sort((x,y)=>x[0]-y[0]);
-      order.set(ranks[i],sorted.map(p=>p[1]));
-    }
-  }
-  /* ---- 4. coordinate assignment ---- */
-  const positions=new Map();
-  const rowWidths=new Map();
-  ranks.forEach(r=>{
-    const arr=order.get(r);
-    rowWidths.set(r,arr.reduce((s,al)=>s+(N.get(al).w||NW)+X_GAP,0)-X_GAP);
-  });
-  const maxRowW=Math.max(...ranks.map(r=>rowWidths.get(r)),NW);
-  ranks.forEach((r,ri)=>{
-    let x=(maxRowW-rowWidths.get(r))/2;
-    order.get(r).forEach(al=>{
-      positions.set(al,{x,y:ri*(NH+LAYER_GAP)});
-      x+=(N.get(al).w||NW)+X_GAP;
-    });
-  });
-  /* ---- 5. zone bounding rectangles ---- */
-  const zoneRects=new Map();
-  if(opts.zones){
-    for(const z of opts.zones){
-      const members=z.nodes||[];
-      if(!members.length)continue;
-      let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-      members.forEach(al=>{
-        const p=positions.get(al);if(!p)return;
-        const w=N.get(al).w||NW,h=N.get(al).h||NH;
-        minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);
-        maxX=Math.max(maxX,p.x+w);maxY=Math.max(maxY,p.y+h);
-      });
-      if(minX<Infinity){
-        zoneRects.set(z.alias,{x:minX-PAD,y:minY-PAD-LABEL_PAD,w:(maxX-minX)+PAD*2,h:(maxY-minY)+PAD*2+LABEL_PAD});
+  [...zAdj.keys()].forEach(k=>{if(!zSeen.has(k)){let mx=-1;zRad.get(k).forEach(p=>{mx=Math.max(mx,zLvl.get(p)||0);});zLvl.set(k,mx+1);}});
+  /* propagate child zone levels up to parents (parent level = max child level) */
+  for(let pass=0;pass<3;pass++){
+    for(const z of zones){
+      if(kids.get(z.alias).length){
+        const mx=Math.max(...kids.get(z.alias).map(c=>zLvl.get(c)||0));
+        zLvl.set(z.alias,Math.max(zLvl.get(z.alias)||0,mx));
       }
     }
   }
-  return{positions,zoneRects,ranks,order};
+  /* file order tiebreak */
+  const fileIdx=new Map();zones.forEach((z,i)=>fileIdx.set(z.alias,i));fileIdx.set(UNZ,-1);
+  const lvlOf=a=>zLvl.get(a)||0;
+  const orderedRoots=roots.slice().sort((a,b)=>lvlOf(a)-lvlOf(b)||fileIdx.get(a)-fileIdx.get(b));
+  /* ---- 2. rank nodes within each leaf zone (intra-zone edges + direction hints) ---- */
+  const rank=new Map(nodes.map(n=>[n.alias,0]));
+  for(const z of zones){const zA=z.alias;
+    const members=Z.get(zA).nodes||[];
+    if(!members.length)continue;
+    const mset=new Set(members);
+    const adj=new Map(),rad=new Map();
+    members.forEach(m=>{adj.set(m,[]);rad.set(m,[]);});
+    for(const e of edges){
+      if(!N.has(e.a)||!N.has(e.b))continue;
+      const{a,b}=fwdEdge(e);
+      if(mset.has(a)&&mset.has(b)){adj.get(a).push(b);rad.get(b).push(a);}
+    }
+    const deg=new Map(members.map(m=>[m,rad.get(m).length]));
+    const q=members.filter(m=>deg.get(m)===0);
+    const seen=new Set(q);
+    while(q.length){
+      const u=q.shift();
+      for(const v of adj.get(u)){
+        rank.set(v,Math.max(rank.get(v)||0,(rank.get(u)||0)+1));
+        deg.set(v,deg.get(v)-1);
+        if(deg.get(v)===0&&!seen.has(v)){seen.add(v);q.push(v);}
+      }
+    }
+    members.forEach(m=>{
+      if(!seen.has(m)){let mx=-1;rad.get(m).forEach(p=>{mx=Math.max(mx,rank.get(p)||0);});rank.set(m,mx+1);}
+    });
+  }
+  /* unzoned nodes: rank among themselves */
+  {
+    const members=nodes.filter(n=>!dZone.get(n.alias)).map(n=>n.alias);
+    const mset=new Set(members);
+    const adj=new Map(),rad=new Map();
+    members.forEach(m=>{adj.set(m,[]);rad.set(m,[]);});
+    for(const e of edges){
+      if(!N.has(e.a)||!N.has(e.b))continue;
+      const{a,b}=fwdEdge(e);
+      if(mset.has(a)&&mset.has(b)){adj.get(a).push(b);rad.get(b).push(a);}
+    }
+    const deg=new Map(members.map(m=>[m,rad.get(m).length]));
+    const q=members.filter(m=>deg.get(m)===0);const seen=new Set(q);
+    while(q.length){
+      const u=q.shift();
+      for(const v of adj.get(u)){
+        rank.set(v,Math.max(rank.get(v)||0,(rank.get(u)||0)+1));
+        deg.set(v,deg.get(v)-1);
+        if(deg.get(v)===0&&!seen.has(v)){seen.add(v);q.push(v);}
+      }
+    }
+    members.forEach(m=>{if(!seen.has(m)){let mx=-1;rad.get(m).forEach(p=>{mx=Math.max(mx,rank.get(p)||0);});rank.set(m,mx+1);}});
+  }
+  /* ---- 3. barycenter ordering within each rank group of each zone ---- */
+  function orderGroup(members){
+    const mset=new Set(members);
+    const local=[];
+    for(const e of edges){
+      if(!N.has(e.a)||!N.has(e.b))continue;
+      const{a,b}=fwdEdge(e);
+      if(mset.has(a)&&mset.has(b))local.push({a,b});
+    }
+    const byRank=new Map();
+    members.forEach(m=>{const r=rank.get(m)||0;if(!byRank.has(r))byRank.set(r,[]);byRank.get(r).push(m);});
+    const ranks=[...byRank.keys()].sort((x,y)=>x-y);
+    const order=new Map(ranks.map(r=>[r,byRank.get(r)]));
+    const up=new Map(),dn=new Map();
+    members.forEach(m=>{up.set(m,[]);dn.set(m,[]);});
+    local.forEach(({a,b})=>{const ra=rank.get(a)||0,rb=rank.get(b)||0;if(rb>ra){dn.get(a).push(b);up.get(b).push(a);}});
+    const posOf=new Map();  /* alias → {row, col} */
+    const recompute=()=>{ranks.forEach(r=>order.get(r).forEach((al,c)=>posOf.set(al,{row:r,col:c})));};
+    recompute();
+    function bary(arr,dir){
+      return arr.map(al=>{
+        const nb=dir==='up'?up.get(al):dn.get(al);
+        if(!nb||!nb.length)return null;
+        let s=0,c=0;nb.forEach(x=>{const p=posOf.get(x);if(p){s+=p.col;c++;}});
+        return c?s/c:null;
+      });
+    }
+    for(let sweep=0;sweep<4;sweep++){
+      for(let i=1;i<ranks.length;i++){
+        const cur=order.get(ranks[i]);const b=bary(cur,'up');
+        const idx=cur.map((al,j)=>[b[j]==null?j:b[j],al]).sort((x,y)=>x[0]-y[0]);
+        order.set(ranks[i],idx.map(p=>p[1]));recompute();
+      }
+      for(let i=ranks.length-2;i>=0;i--){
+        const cur=order.get(ranks[i]);const b=bary(cur,'dn');
+        const idx=cur.map((al,j)=>[b[j]==null?j:b[j],al]).sort((x,y)=>x[0]-y[0]);
+        order.set(ranks[i],idx.map(p=>p[1]));recompute();
+      }
+    }
+    return{ranks,order};
+  }
+  /* ---- 4. recursive band layout ---- */
+  const positions=new Map();
+  const zoneRects=new Map();
+  function layoutZoneBand(zA,x,y){
+    /* returns {w,h}; places members in global coords; fills zoneRects */
+    const z=Z.get(zA);
+    const children=kids.get(zA)||[];
+    const members=z.nodes||[];
+    let innerW=0,innerH=0;
+    /* direct members block (top part of band) */
+    if(members.length){
+      const{ranks,order}=orderGroup(members);
+      const rowW=new Map();
+      ranks.forEach(r=>{
+        const arr=order.get(r);
+        rowW.set(r,arr.reduce((s,al)=>s+(N.get(al).w||NW)+X_GAP,0)-X_GAP);
+      });
+      const maxW=Math.max(...ranks.map(r=>rowW.get(r)),NW);
+      ranks.forEach((r,ri)=>{
+        let cx=(maxW-rowW.get(r))/2;
+        order.get(r).forEach(al=>{
+          positions.set(al,{x:x+ZPAD+cx,y:y+ZPAD+LBL_PAD+ri*(NH+LAYER_GAP)});
+          cx+=(N.get(al).w||NW)+X_GAP;
+        });
+      });
+      const mH=ranks.length*(NH+LAYER_GAP);
+      /* children row below direct members, horizontally */
+      let cy=y+ZPAD+LBL_PAD+mH+(children.length?ZGAP/2:0);
+      let cx2=x+ZPAD;
+      let maxChH=0;
+      const childRects=[];
+      for(const cA of children){
+        const cw=measureZone(cA);
+        layoutZoneBand(cA,cx2,cy);
+        const crect=zoneRects.get(cA);
+        childRects.push(crect);
+        maxChH=Math.max(maxChH,crect.h);
+        cx2+=crect.w+ZGAP;
+      }
+      innerW=Math.max(maxW,(childRects.length?childRects[childRects.length-1].x+childRects[childRects.length-1].w-x-ZPAD:maxW));
+      innerH=mH+(children.length?ZGAP/2+maxChH:0);
+      const w=innerW+ZPAD*2,h=innerH+ZPAD*2+LBL_PAD;
+      zoneRects.set(zA,{x,y,w,h});
+      return{w,h};
+    }
+    /* no direct members: just children side-by-side */
+    let cx2=x+ZPAD,cy=y+ZPAD+LBL_PAD,maxChH=0;
+    const childRects=[];
+    for(const cA of children){
+      layoutZoneBand(cA,cx2,cy);
+      const crect=zoneRects.get(cA);
+      childRects.push(crect);
+      maxChH=Math.max(maxChH,crect.h);
+      cx2+=crect.w+ZGAP;
+    }
+    const w=(childRects.length?childRects[childRects.length-1].x+childRects[childRects.length-1].w-x:0)+ZPAD;
+    const h=LBL_PAD+maxChH+ZPAD*2;
+    zoneRects.set(zA,{x,y,w:Math.max(w,140),h:Math.max(h,80)});
+    return{w:zoneRects.get(zA).w,h:zoneRects.get(zA).h};
+  }
+  /* measure zone width without placing (for the children-row width calc) — cheap: layout into throwaway, then re-layout properly.
+     Simpler: layout children left-to-right iteratively since layoutZoneBand places absolutely. */
+  function measureZone(zA){
+    /* width = max(direct maxW, children sum) + padding — compute without placing */
+    const z=Z.get(zA);
+    const members=z.nodes||[];
+    const children=kids.get(zA)||[];
+    let w=0;
+    if(members.length){
+      const{ranks,order}=orderGroup(members);
+      const rowW=new Map();
+      ranks.forEach(r=>{const arr=order.get(r);rowW.set(r,arr.reduce((s,al)=>s+(N.get(al).w||NW)+X_GAP,0)-X_GAP);});
+      w=Math.max(...ranks.map(r=>rowW.get(r)),NW)+ZPAD*2;
+    }
+    let cw=0;
+    for(const cA of children){cw+=measureZone(cA)+ZGAP;}
+    if(cw)cw-=ZGAP;
+    return Math.max(w,cw);
+  }
+  /* ---- 5. stack root bands vertically, centered ---- */
+  let by=0,maxW=0;
+  const placed=[];
+  for(const rA of orderedRoots){
+    const w=measureZone(rA);
+    placed.push({rA,w});
+    maxW=Math.max(maxW,w);
+  }
+  /* unzoned pseudo-band measure */
+  const unzNodes=nodes.filter(n=>!dZone.get(n.alias));
+  let unzH=0,unzW=0;
+  if(unzNodes.length){
+    const aliases=unzNodes.map(n=>n.alias);
+    const{ranks,order}=orderGroup(aliases);
+    const rowW=new Map();
+    ranks.forEach(r=>{const arr=order.get(r);rowW.set(r,arr.reduce((s,al)=>s+(N.get(al).w||NW)+X_GAP,0)-X_GAP);});
+    unzW=Math.max(...ranks.map(r=>rowW.get(r)),NW);
+    unzH=ranks.length*(NH+LAYER_GAP);
+  }
+  const unzLvl=lvlOf(UNZ);
+  let unzPlaced=false;
+  let yy=0;
+  for(const{rA,w}of placed){
+    /* insert unzoned band at its level */
+    if(!unzPlaced&&unzNodes.length&&unzLvl<=lvlOf(rA)&&!(unzLvl===lvlOf(rA)&&fileIdx.get(rA)<0)){
+      layoutUnzoned((maxW-unzW)/2,yy);yy+=unzH+ZGAP;unzPlaced=true;
+    }
+    layoutZoneBand(rA,(maxW-w)/2,yy);
+    yy+=zoneRects.get(rA).h+ZGAP;
+  }
+  if(!unzPlaced&&unzNodes.length){layoutUnzoned((maxW-unzW)/2,yy);}
+  function layoutUnzoned(x,y){
+    const aliases=unzNodes.map(n=>n.alias);
+    const{ranks,order}=orderGroup(aliases);
+    const rowW=new Map();
+    ranks.forEach(r=>{const arr=order.get(r);rowW.set(r,arr.reduce((s,al)=>s+(N.get(al).w||NW)+X_GAP,0)-X_GAP);});
+    const mw=Math.max(...ranks.map(r=>rowW.get(r)),NW);
+    ranks.forEach((r,ri)=>{
+      let cx=(mw-rowW.get(r))/2;
+      order.get(r).forEach(al=>{
+        positions.set(al,{x:x+cx,y:y+ri*(NH+LAYER_GAP)});
+        cx+=(N.get(al).w||NW)+X_GAP;
+      });
+    });
+  }
+  return{positions,zoneRects};
 }
-const PAD=24;
 function pumlLayout(parsed){
   const NWL=NW+20,NHL=NH+20,ZONE_GAP=60,PAD=24,LABEL=30;
   const nodes=[],edges=[],zones=[];
@@ -2473,9 +2638,9 @@ function pumlLayout(parsed){
   }
   /* ---- layered layout (Sugiyama): ranks follow edge direction, zones stacked vertically ---- */
   const lay=layeredLayout(
-    parsed.nodes.map(n=>({alias:n.alias,label:n.label,w:NW,h:NH,zoneAlias:nodeZone.get(n.alias)||null})),
+    parsed.nodes.map(n=>({alias:n.alias,label:n.label,w:NW,h:NH,zoneAlias:n.zoneAlias||null})),
     parsed.edges.map(e=>({a:e.a,b:e.b,dir:e.dir||null})),
-    {zones:parsed.zones.map(z=>({alias:z.alias,nodes:zoneMembers.get(z.alias)||[]}))}
+    {zones:parsed.zones.map(z=>({alias:z.alias,nodes:z.nodes,parentAlias:z.parentAlias||null}))}
   );
   /* place nodes using layered positions, with a global offset */
   const OFF=120;
