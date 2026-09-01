@@ -2660,20 +2660,30 @@ function layeredLayout(nodes,edges,opts){
     /* direct members block (top part of band) */
     if(members.length){
       const{ranks,order}=orderGroup(members);
+      const MAX_COLS=8;  /* wrap ranks wider than this into a grid */
       const rowW=new Map();
+      const rowCols=new Map();  /* visual columns per rank after wrapping */
       ranks.forEach(r=>{
         const arr=order.get(r);
-        rowW.set(r,arr.reduce((s,al)=>s+(N.get(al).w||NW)+X_GAP,0)-X_GAP);
+        const cols=Math.min(arr.length,MAX_COLS);
+        rowCols.set(r,cols);
+        const rowsInRank=Math.ceil(arr.length/cols);
+        rowW.set(r,cols*(NW+X_GAP)-X_GAP);
       });
       const maxW=Math.max(...ranks.map(r=>rowW.get(r)),NW);
-      ranks.forEach((r,ri)=>{
-        let cx=(maxW-rowW.get(r))/2;
-        order.get(r).forEach(al=>{
-          positions.set(al,{x:x+ZPAD+cx,y:y+ZPAD+LBL_PAD+ri*(NH+LAYER_GAP)});
-          cx+=(N.get(al).w||NW)+X_GAP;
+      let yCursor=y+ZPAD+LBL_PAD;
+      ranks.forEach((r)=>{
+        const arr=order.get(r);
+        const cols=rowCols.get(r);
+        const cx0=x+ZPAD+(maxW-rowW.get(r))/2;
+        arr.forEach((al,j)=>{
+          const col=j%cols, row=Math.floor(j/cols);
+          positions.set(al,{x:cx0+col*(NW+X_GAP),y:yCursor+row*(NH+LAYER_GAP)});
         });
+        const rowsInRank=Math.ceil(arr.length/cols);
+        yCursor+=rowsInRank*(NH+LAYER_GAP);
       });
-      const mH=ranks.length*(NH+LAYER_GAP);
+      const mH=yCursor-(y+ZPAD+LBL_PAD);
       /* children row below direct members, horizontally */
       let cy=y+ZPAD+LBL_PAD+mH+(children.length?ZGAP/2:0);
       let cx2=x+ZPAD;
@@ -2711,15 +2721,15 @@ function layeredLayout(nodes,edges,opts){
   /* measure zone width without placing (for the children-row width calc) — cheap: layout into throwaway, then re-layout properly.
      Simpler: layout children left-to-right iteratively since layoutZoneBand places absolutely. */
   function measureZone(zA){
-    /* width = max(direct maxW, children sum) + padding — compute without placing */
     const z=Z.get(zA);
     const members=z.nodes||[];
     const children=kids.get(zA)||[];
+    const MAX_COLS=8;
     let w=0;
     if(members.length){
       const{ranks,order}=orderGroup(members);
       const rowW=new Map();
-      ranks.forEach(r=>{const arr=order.get(r);rowW.set(r,arr.reduce((s,al)=>s+(N.get(al).w||NW)+X_GAP,0)-X_GAP);});
+      ranks.forEach(r=>{const arr=order.get(r);const cols=Math.min(arr.length,MAX_COLS);rowW.set(r,cols*(NW+X_GAP)-X_GAP);});
       w=Math.max(...ranks.map(r=>rowW.get(r)),NW)+ZPAD*2;
     }
     let cw=0;
