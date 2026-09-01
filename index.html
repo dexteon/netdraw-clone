@@ -2877,14 +2877,30 @@ function pumlLayout(parsed){
   const NWL=NW+20,NHL=NH+20,ZONE_GAP=60,PAD=24,LABEL=30;
   const nodes=[],edges=[],zones=[];
   const idBase=Math.max(state.nodes.length+state.edges.length+state.zones.length,1000);
-  let idn=idBase;
+  /* freshly-minted node ids must not collide with a preserved node's existing id
+     (see prevById below) — now that a node can survive a reparse with its old id,
+     the old count-based idBase floor alone isn't enough to guarantee uniqueness. */
+  let maxExistingNodeNum=0;
+  for(const n of state.nodes){
+    const m=/(\d+)$/.exec(n.id);
+    if(m)maxExistingNodeNum=Math.max(maxExistingNodeNum,+m[1]);
+  }
+  let idn=Math.max(idBase,maxExistingNodeNum+1);
+  /* preserve manual position/color/fx across a re-import: pumlSerialize writes each
+     node's own state id as its PUML alias, so if this parse's alias matches an id
+     already on canvas, keep that node's id and placement instead of minting a fresh
+     one and re-running auto-layout on it — otherwise every live-typed edit in the
+     PUML panel would silently discard dragged layouts (state.nodes here is still
+     the pre-import state; doPumlImport hasn't overwritten it yet). */
+  const prevById=new Map(state.nodes.map(n=>[n.id,n]));
   const aliasToId=new Map();
   const aliasToIdx=new Map();
   for(let i=0;i<parsed.nodes.length;i++){
-    const id='n'+(idn++);
+    const prev=prevById.get(parsed.nodes[i].alias);
+    const id=prev?prev.id:'n'+(idn++);
     aliasToId.set(parsed.nodes[i].alias,id);
     aliasToIdx.set(parsed.nodes[i].alias,i);
-    nodes.push({id,type:parsed.nodes[i].type,x:0,y:0,label:parsed.nodes[i].label,color:SWATCHES[0],meta:parsed.nodes[i].meta||{},fx:{}});
+    nodes.push({id,type:parsed.nodes[i].type,x:prev?prev.x:0,y:prev?prev.y:0,label:parsed.nodes[i].label,color:prev?prev.color:SWATCHES[0],meta:parsed.nodes[i].meta||{},fx:prev?prev.fx:{}});
   }
   let idz=idBase;
   const zoneIdByAlias=new Map();
@@ -2920,9 +2936,12 @@ function pumlLayout(parsed){
     parsed.edges.map(e=>({a:e.a,b:e.b,dir:e.dir||null})),
     {zones:parsed.zones.map(z=>({alias:z.alias,nodes:z.nodes,parentAlias:z.parentAlias||null}))}
   );
-  /* place nodes using layered positions, with a global offset */
+  /* place nodes using layered positions, with a global offset — but a node whose
+     id/position was preserved above keeps its existing spot instead of being
+     moved to the freshly-computed auto-layout position. */
   const OFF=120;
   for(const n of parsed.nodes){
+    if(prevById.has(n.alias))continue;
     const p=lay.positions.get(n.alias);
     const idx=aliasToIdx.get(n.alias);
     if(p&&idx!=null){nodes[idx].x=OFF+p.x;nodes[idx].y=OFF+p.y;}
@@ -2947,7 +2966,8 @@ function pumlLayout(parsed){
   for(const z of zones)delete z.nodeIds;
   return{nodes,edges,zones};
 }
-function doPumlImport(text){
+function doPumlImport(text,opts){
+  const live=!!(opts&&opts.live);
   const parsed=pumlParse(text);
   if(parsed.warnings.length){
     toast(parsed.warnings.length+' warning(s) — see console');
@@ -2955,9 +2975,14 @@ function doPumlImport(text){
   }
   const frag=pumlLayout(parsed);
   state.nodes=frag.nodes;state.edges=frag.edges;state.zones=frag.zones;
-  sel=null;hideProps();
+  /* live sync (typing in the PUML panel) reuses existing node ids/positions via
+     pumlLayout's preservation above, so the current selection and viewport are
+     still meaningful — don't yank focus or re-fit the camera on every keystroke.
+     An explicit Import (button/file) still resets both, as before. */
+  if(!live){sel=null;hideProps();}
   restoreIds();
-  commit();renderAll();zoomFit();
+  commit();renderAll();
+  if(!live)zoomFit();
   toast('Imported '+frag.nodes.length+' nodes, '+frag.edges.length+' links, '+frag.zones.length+' zones');
 }
 function openPumlModal(){
@@ -2994,7 +3019,7 @@ function openPumlModal(){
       if(!txt.trim()){statusEl.textContent='';return;}
       applying=true;
       try{
-        doPumlImport(txt);
+        doPumlImport(txt,{live:true});
         const p=pumlParse(txt);
         const warns=p.warnings.filter(w=>!w.includes('BackgroundColor')&&!w.includes('BorderColor')&&!w.includes('skinparam node')&&!w.includes('BorderColor')&&!w.includes('top to bottom'));
         statusEl.textContent=p.nodes.length+' nodes · '+p.edges.length+' edges · '+p.zones.length+' zones'+(warns.length?' · '+warns.length+' warnings':'');
