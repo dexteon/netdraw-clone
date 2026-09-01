@@ -615,10 +615,34 @@ function computeOrthoRoutes(){
      used by ELK for dense mesh topologies. ---- */
   const rightMargin=Math.max(...state.nodes.map(n=>n.x+nodeW(n)))+40;
   const leftMargin=Math.min(...state.nodes.map(n=>n.x))-40;
+  const MARGIN_LANE_GAP=10;
+  let rightLaneN=0,leftLaneN=0;
   for(const [eid,route] of ORTHO_ROUTES){
     const e=state.edges.find(x=>x.id===eid);if(!e)continue;
     const skip=new Set([e.a,e.b]);
     let pts=route.d.replace("M ","").split(" L ").map(s=>s.split(" ").map(Number).map(Math.round));
+    /* iterative fix: try splicing each interior (non-endpoint) segment through the
+       nearest free corridor before falling back to the coarser margin reroute below.
+       Only interior segments are eligible — moving pts[0]/pts[last] would disconnect
+       the route from the node's actual port. */
+    for(let i=1;i<pts.length-2;i++){
+      const[px,py]=pts[i],[qx,qy]=pts[i+1];
+      let segPiercing=false;
+      for(const n of state.nodes){
+        if(skip.has(n.id))continue;
+        if(px===qx&&px>n.x+3&&px<n.x+nodeW(n)-3&&n.y+nodeH(n)>Math.min(py,qy)+2&&n.y<Math.max(py,qy)-2){segPiercing=true;break;}
+        if(py===qy&&py>n.y+3&&py<n.y+nodeH(n)-3&&n.x+nodeW(n)>Math.min(px,qx)+2&&n.x<Math.max(px,qx)-2){segPiercing=true;break;}
+      }
+      if(!segPiercing)continue;
+      if(px===qx){
+        const nx=findCorridor('x',px,py,qy,state.nodes,skip);
+        pts[i][0]=nx;pts[i+1][0]=nx;
+      }else if(py===qy){
+        const ny=findCorridor('y',py,px,qx,state.nodes,skip);
+        pts[i][1]=ny;pts[i+1][1]=ny;
+      }
+    }
+    route.d='M '+pts.map(p=>p[0]+' '+p[1]).join(' L ');
     /* check if still piercing after the iterative fix */
     let piercing=false;
     for(let i=0;i<pts.length-1;i++){
@@ -636,7 +660,10 @@ function computeOrthoRoutes(){
       const aLeft=aN.x,bLeft=bN.x;
       /* pick the closer margin */
       const useRight=(Math.abs(rightMargin-aRight)+Math.abs(rightMargin-bRight))<(Math.abs(aLeft-leftMargin)+Math.abs(bLeft-leftMargin));
-      const mx=useRight?rightMargin:leftMargin;
+      /* give each edge routed to this margin its own lane so parallel bus-routed
+         edges don't draw as coincident/overlapping vertical lines */
+      const laneOffset=(useRight?rightLaneN++:leftLaneN++)*MARGIN_LANE_GAP*(useRight?1:-1);
+      const mx=(useRight?rightMargin:leftMargin)+laneOffset;
       const ax=useRight?aRight:aLeft, bx=useRight?bRight:bLeft;
       const ay=aN.y+nodeH(aN)/2, by=bN.y+nodeH(bN)/2;
       pts=[{x:ax,y:ay},{x:mx,y:ay},{x:mx,y:by},{x:bx,y:by}];
