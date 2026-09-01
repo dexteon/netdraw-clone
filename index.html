@@ -481,6 +481,102 @@ function dashFor(e){
     default:return e.anim?'6 8':'';
   }
 }
+/* ---- orthogonal channel router: spreads parallel edges across the row gap (ELK-style) ----
+   Edges between the same two rows share a gap; each gets its own horizontal channel
+   (evenly spaced), exit/entry points fan out along node edges, labels sit on their
+   own channel — no stacked lines, no stacked labels. ---- */
+let ORTHO_ROUTES=new Map();
+function computeOrthoRoutes(){
+  ORTHO_ROUTES=new Map();
+  const es=state.edges.filter(e=>e.mode==='ortho'&&nodeById(e.a)&&nodeById(e.b));
+  if(!es.length)return;
+  const groups=new Map();
+  for(const e of es){
+    const a=nodeById(e.a),b=nodeById(e.b);
+    const rev=a.y>b.y;                 /* rev: logical source is the LOWER node */
+    const hi=rev?b:a,lo=rev?a:b;
+    const key=hi.y+'|'+lo.y;
+    if(!groups.has(key))groups.set(key,[]);
+    groups.get(key).push({e,hi,lo,rev});
+  }
+  for(const arr of groups.values()){
+    const sameRow=Math.abs(arr[0].hi.y-arr[0].lo.y)<2;
+    let gapTop,gapBot;
+    if(sameRow){gapTop=arr[0].hi.y+nodeH(arr[0].hi)+8;gapBot=gapTop+Math.max(36,arr.length*24);}
+    else{gapTop=arr[0].hi.y+nodeH(arr[0].hi);gapBot=arr[0].lo.y;}
+    /* sort for nesting (fewer channel crossings) */
+    arr.sort((A,B)=>(A.hi.x+A.lo.x)-(B.hi.x+B.lo.x));
+    const n=arr.length;
+    /* fan exit/entry x across node width when several edges share a node */
+    const bySrc=new Map(),byDst=new Map();
+    for(const r of arr){
+      if(!bySrc.has(r.hi.id))bySrc.set(r.hi.id,[]);
+      bySrc.get(r.hi.id).push(r);
+      if(!byDst.has(r.lo.id))byDst.set(r.lo.id,[]);
+      byDst.get(r.lo.id).push(r);
+    }
+    for(const list of bySrc.values()){list.sort((A,B)=>A.lo.x-B.lo.x);list.forEach((r,j)=>{r.ex=r.hi.x+nodeW(r.hi)*(j+1)/(list.length+1);});}
+    for(const list of byDst.values()){list.sort((A,B)=>A.hi.x-B.hi.x);list.forEach((r,j)=>{r.tx=r.lo.x+nodeW(r.lo)*(j+1)/(list.length+1);});}
+    /* detect straight-vertical edges that pierce an intermediate node → detour around it */
+    for(const r of arr){
+      const direct=r.ex===r.tx;
+      if(!direct)continue;
+      const blocker=state.nodes.find(nn=>{
+        if(nn.id===r.hi.id||nn.id===r.lo.id)return false;
+        return r.ex>nn.x-6&&r.ex<nn.x+nodeW(nn)+6&&nn.y>r.hi.y+nodeH(r.hi)&&nn.y+nodeH(nn)<r.lo.y;
+      });
+      if(blocker){
+        /* detour x: just outside the blocker (and the widest node in its row) */
+        const rowMates=state.nodes.filter(nn=>Math.abs(nn.y-blocker.y)<2&&nn.id!==blocker.id);
+        let rightmost=blocker.x+nodeW(blocker);
+        rowMates.forEach(m=>{rightmost=Math.max(rightmost,m.x+nodeW(m));});
+        const dxr=rightmost+18;                       /* detour channel x (right of row) */
+        r.detour=dxr;
+      }
+    }
+    for(let i=0;i<n;i++){
+      const r=arr[i];
+      const cy=gapTop+(i+1)*(gapBot-gapTop)/(n+1);      /* this edge's private channel */
+      const sy=r.hi.y+nodeH(r.hi);                       /* exit: bottom of upper node */
+      const dy=sameRow?r.lo.y+nodeH(r.lo):r.lo.y;        /* entry: top of lower node (bottom if same row) */
+      let pts;
+      if(r.detour){
+        /* detour: go right around the blocker node, then back to target — pure orthogonal */
+        const bx=r.detour;
+        pts=[{x:r.ex,y:sy},{x:r.ex,y:sy+14},{x:bx,y:sy+14},{x:bx,y:dy-14},{x:r.tx,y:dy-14},{x:r.tx,y:dy}];
+      }else{
+        pts=[{x:r.ex,y:sy},{x:r.ex,y:cy},{x:r.tx,y:cy},{x:r.tx,y:dy}];
+      }
+      if(r.rev)pts=pts.slice().reverse();                /* keep arrowhead on the logical target */
+      /* label position: channel midpoint, shifted along the channel to dodge node columns.
+         Check label rect (approx 120x22) against node rects near the channel y. */
+      const approxW=120,approxH=22;
+      const nodesNear=state.nodes.filter(nn=>{
+        const top=nn.y,bottom=nn.y+nodeH(nn);
+        return cy+approxH/2>top-6&&cy-approxH/2<bottom+6;  /* label rect overlaps node y-range */
+      });
+      const nodeRanges=nodesNear.map(nn=>({x0:nn.x-4,x1:nn.x+nodeW(nn)+4}));
+      let lx=(r.ex+r.tx)/2,ly=cy,fallback=true;
+      const base=lx;
+      for(let t=0;t<=12;t++){
+        const cand=base+((t+1)>>1)*(t%2?-1:1)*Math.abs(r.tx-r.ex)/14;
+        const lx0=cand-approxW/2,lx1=cand+approxW/2;
+        if(nodeRanges.every(nr=>lx1<nr.x0||lx0>nr.x1)){lx=cand;fallback=false;break;}
+        if(t===12)lx=cand;
+      }
+      if(fallback){
+        /* no free horizontal spot: put the label beside the detour/vertical run */
+        if(r.detour){
+          lx=r.detour+approxW/2+10;                    /* right of the detour channel */
+        }else{
+          lx=(r.ex<=r.tx?Math.max(r.ex,r.tx)+approxW/2+10:Math.min(r.ex,r.tx)-approxW/2-10);
+        }
+        ly=(sy+dy)/2;
+      }
+      ORTHO_ROUTES.set(r.e.id,{d:'M '+pts.map(p=>p.x+' '+p.y).join(' L '),mid:{x:lx,y:ly}});
+    }
+  }
+}
 /* ===================== swimlanes ===================== */
 function laneRects(z){
   const rects=[];const titleH=26,headerW=22,laneH=(z.h-titleH)/z.lanes.length;
@@ -586,7 +682,8 @@ function renderEdge(e){
   const stA=elemState(e.a),stB=elemState(e.b);
   if(stA==='hidden'||stB==='hidden')return null;
   const dimmed=stA==='dim'||stB==='dim';
-  const gm=edgeGeom(e.a,e.b,e.mode);if(!gm)return null;
+  const route=ORTHO_ROUTES.get(e.id);
+  const gm=route||edgeGeom(e.a,e.b,e.mode);if(!gm)return null;
   const on=sel&&sel.type==='edge'&&sel.id===e.id;
   const sneak=e.dash==='sneakernet';
   const g=el('g',{class:'edge'+(on?' sel':''),'data-id':e.id});
@@ -617,6 +714,7 @@ function renderEdge(e){
 }
 function renderAll(){
   gZ.innerHTML='';gE.innerHTML='';gN.innerHTML='';gT.innerHTML='';gU.innerHTML='';
+  computeOrthoRoutes();
   for(const z of state.zones)gZ.appendChild(renderZone(z));
   for(const e of state.edges){const eg=renderEdge(e);if(eg)gE.appendChild(eg);}
   for(const n of state.nodes){const ng=renderNode(n);if(ng)gN.appendChild(ng);}
@@ -2316,7 +2414,7 @@ function pumlParse(text){
    Nodes rank within their own zone; barycenter ordering minimizes crossings.
    Own implementation of published algorithms — MIT.
    ============================================================================================ */
-const LAYER_GAP=100,X_GAP=44,LBL_PAD=34,ZPAD=26,ZGAP=70;
+const LAYER_GAP=140,X_GAP=44,LBL_PAD=34,ZPAD=26,ZGAP=70;
 function layeredLayout(nodes,edges,opts){
   opts=opts||{};
   const N=new Map();nodes.forEach(n=>N.set(n.alias,n));
