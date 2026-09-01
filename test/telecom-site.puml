@@ -1,0 +1,81 @@
+@startuml
+!define RECTANGLE class
+skinparam componentStyle uml2
+skinparam linetype ortho
+skinparam DefaultTextAlignment center
+skinparam packageStyle rectangle
+
+skinparam component {
+  BackgroundColor<<Network>> LightBlue
+  BackgroundColor<<Controller>> LightGreen
+  BackgroundColor<<Field>> LightYellow
+  BackgroundColor<<Gateway>> Pink
+}
+
+title Telecom Site OT/ICS Architecture (Purdue Model Aligned)
+
+cloud "Telecom WAN / Enterprise IP Network" as Level4 {
+    [NOC / SOC SIEM] as NOC
+    [Central SCADA Server] as SCADA
+}
+
+package "Level 3: Site Operations (Site Edge)" as Level3 {
+    [Site Edge Firewall / VPN Gateway] <<Gateway>> as FW
+    [Site Controller / BMS\n(e.g., Tridium JACE)] <<Controller>> as BMS
+    [Local HMI] <<Controller>> as HMI
+}
+
+package "Level 2: Supervisory Control" as Level2 {
+    [Power RTU / PLC] <<Controller>> as PowerRTU
+    [HVAC Controller] <<Controller>> as HVACCtrl
+    [Security & Environment PLC] <<Controller>> as EnvPLC
+}
+
+package "Level 0/1: Process & Basic Control" as Level1 {
+    folder "Power Infrastructure" {
+        [Diesel Generator] <<Field>> as Gen
+        [ATS] <<Field>> as ATS
+        [UPS / Battery Bank] <<Field>> as UPS
+        [DC Rectifiers (48V)] <<Field>> as Rectifier
+    }
+    folder "Thermal Management" {
+        [CRAC Unit / HVAC] <<Field>> as CRAC
+        [Exhaust / Intake Fans] <<Field>> as Fans
+    }
+    folder "Facility & Environment" {
+        [Temp/Humidity Sensors] <<Field>> as Sensors
+        [Fire Suppression System] <<Field>> as Fire
+        [Access Control / IP Cameras] <<Field>> as Security
+    }
+}
+
+' External Connections
+NOC <--> FW : IPsec / Syslog
+SCADA <--> FW : DNP3-SA / ICCP
+
+' Level 3 Connections
+FW -down-> BMS : Niagara Fox / HTTPS
+FW -down-> HMI : HTTPS / RDP
+BMS -right-> HMI : Fox / WebSockets
+
+' Level 2 Connections
+BMS -down-> PowerRTU : Modbus TCP / DNP3
+BMS -down-> HVACCtrl : BACnet/IP
+BMS -down-> EnvPLC : Modbus TCP / EtherNet/IP
+
+' Level 1 Connections - Power
+PowerRTU -down-> Gen : Hardwired / RS-485
+PowerRTU -down-> ATS : Hardwired I/O
+PowerRTU -down-> UPS : SNMP / Modbus RTU
+PowerRTU -down-> Rectifier : Modbus RTU
+
+' Level 1 Connections - HVAC
+HVACCtrl -down-> CRAC : BACnet MS/TP
+HVACCtrl -down-> Fans : Analog/Digital I/O
+
+' Level 1 Connections - Environment
+EnvPLC -down-> Sensors : 4-20mA / Modbus RTU
+EnvPLC -down-> Fire : Dry Contacts
+EnvPLC -down-> Security : Wiegand / ONVIF
+
+@enduml

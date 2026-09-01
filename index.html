@@ -2065,6 +2065,12 @@ const PUML_STEREOTYPE_MAP={
   interface:'connector',component:'plc',usecase:'process',storage:'historian',
   rectangle:'server',stack:'server',
 };
+/* stereotype → OTDraw type (<<Controller>> etc.) */
+const PUML_STEREO_TYPE_MAP={
+  controller:'plc',field:'actuator',gateway:'firewall',network:'switch',
+  scada:'historian',hmi:'hmi',rtu:'rtu',plc:'plc',sensor:'sensor',
+  server:'server',firewall:'firewall',database:'database',
+};
 const PUML_KEYWORDS=Object.keys(PUML_STEREOTYPE_MAP).sort((a,b)=>b.length-a.length);
 function pumlSanitizeAlias(s){
   let a=String(s||'').replace(/[^A-Za-z0-9_]/g,'_');
@@ -2108,7 +2114,30 @@ function normalizeLines(text){
   }
   return out;
 }
+function pumlGuessType(label){
+  const s=(label||'').toLowerCase();
+  if(/scada|historian|server|siem|noc|soc/.test(s))return 'server';
+  if(/hmi/.test(s))return 'hmi';
+  if(/plc/.test(s))return 'plc';
+  if(/rtu/.test(s))return 'rtu';
+  if(/sensor/.test(s))return 'sensor';
+  if(/firewall|gateway|vpn/.test(s))return 'firewall';
+  if(/switch|router/.test(s))return 'switch';
+  if(/cloud|wan|internet/.test(s))return 'cloud';
+  if(/database|sql/.test(s))return 'database';
+  if(/generator|ats|ups|rectifier|dc/.test(s))return 'actuator';
+  if(/crac|hvac|fan|exhaust|intake/.test(s))return 'actuator';
+  if(/fire|suppression/.test(s))return 'safetyrelay';
+  if(/camera|access control|security/.test(s))return 'sensor';
+  if(/bms|controller|jace|tridium/.test(s))return 'plc';
+  return 'server';
+}
 function parseDeclaration(line,ctx){
+  /* bracket-component first: [Label] as ALIAS <<Stereo>> (UML2 componentStyle) */
+  const br=line.match(/^\[([^\]]*)\]\s*(?:(?:as\s+([A-Za-z0-9_]+)\s*(<<[^>]*>>)?)|(?:((<<[^>]*>>))\s*as\s+([A-Za-z0-9_]+)))/);
+  if(br){
+    return{alias:br[2]||br[6]||null,display:br[1]||null,keyword:'component',stereotype:(br[3]||br[5])?(br[3]||br[5]).slice(2,-2):null,kind:'node',bracket:true};
+  }
   for(const kw of PUML_KEYWORDS){
     const re=new RegExp('^'+kw+'\\s+(.*)$','i');
     const m=line.match(re);
@@ -2121,6 +2150,9 @@ function parseDeclaration(line,ctx){
     if(asM){alias=asM[1];rest=rest.slice(asM[0].length);}
     const stM=rest.match(/<<([^>]*)>>/);
     if(stM)stereo=stM[1];
+    /* block opener: keyword label { — caller decides (zone vs node) */
+    const openBlock=/\{\s*$/.test(rest)||/\{\s*$/.test(line);
+    if(openBlock)return{alias,display,keyword:kw.toLowerCase(),stereotype:stereo,kind:'block',label:display||alias};
     if(!alias&&!display){
       const bare=rest.match(/^([A-Za-z0-9_]+)/);
       if(bare)alias=bare[1];
@@ -2154,37 +2186,56 @@ function pumlParse(text){
   const byAlias=new Map();
   const stack=[];
   let declCount=0;
+  const BLOCK_KEYWORDS=['cloud','folder','rectangle','frame','node','stack','package','database','component'];
   for(const line of normalizeLines(text)){
     /* skip directives & noise (collected as warnings later if unrecognized) */
-    if(/^(skinparam|title|caption|note\s|legend|endlegend|!include|hide|remove|allowmixing|@startuml|@enduml|startuml|enduml|skinparam\b)/i.test(line)){continue;}
-    const pkgM=line.match(/^package\s+(?:"([^"]*)"|([A-Za-z0-9_]+))\s*(?:as\s+([A-Za-z0-9_]+))?\s*(#\S+)?\s*\{(.*)$/i)||line.match(/^package\s+(?:"([^"]*)"|([A-Za-z0-9_]+))\s*(?:as\s+([A-Za-z0-9_]+))?\s*(#\S+)?\s*\{(.*)$/i);
+    if(/^(skinparam|title|caption|note\s|legend|endlegend|!include|!define|!enddef|hide|remove|allowmixing|@startuml|@enduml|startuml|enduml)/i.test(line)){continue;}
+    /* package block (explicit keyword) */
+    const pkgM=line.match(/^package\s+(?:"([^"]*)"|([A-Za-z0-9_]+))\s*(?:as\s+([A-Za-z0-9_]+))?\s*(?:#\S+)?\s*\{(.*)$/i);
     if(pkgM){
-      if(stack.length>=MAX_PUML_DEPTH){
-        warnings.push('brace depth cap exceeded at "'+line.slice(0,40)+'" — remaining nesting flattened');
-        continue;
-      }
-      const label=pkgM[1]||pkgM[2];
-      const alias=pumlSanitizeAlias(pkgM[3]||label);
-      const z={label,alias,children:[],parentAlias:stack.length?stack[stack.length-1].alias:null,nodes:[]};
-      zones.push(z);
-      stack.push(z);
-      const tail=(pkgM[5]||'').trim();
-      if(tail){parseInnerLine(tail);}
+      pushZone(pkgM[1]||pkgM[2],pkgM[3]);
+      const tail=(pkgM[5]||'').trim();if(tail){parseInnerLine(tail);}
+      continue;
+    }
+    /* generic block opener: cloud/folder/rectangle/frame/node "Label" as Alias { */
+    const blkM=line.match(/^(cloud|folder|rectangle|frame|node|stack)\s+(?:"([^"]*)"|([A-Za-z0-9_]+))\s*(?:as\s+([A-Za-z0-9_]+))?\s*(?:#\S+)?\s*\{(.*)$/i);
+    if(blkM){
+      pushZone(blkM[2]||blkM[3],blkM[4]);
+      const tail=(blkM[5]||'').trim();if(tail){parseInnerLine(tail);}
       continue;
     }
     if(/^(\}|end\s+package)\s*$/i.test(line)){
       if(stack.length)stack.pop();
       continue;
     }
+    /* block closer also matches end <keyword> */
+    if(/^end\s+(cloud|folder|rectangle|frame|node|stack|package)\s*$/i.test(line)){
+      if(stack.length)stack.pop();
+      continue;
+    }
     parseInnerLine(line);
+  }
+  function pushZone(label,alias){
+    if(stack.length>=MAX_PUML_DEPTH){
+      warnings.push('brace depth cap exceeded at "'+label.slice(0,40)+'" — remaining nesting flattened');
+      return;
+    }
+    const al=pumlSanitizeAlias(alias||label);
+    const z={label,alias:al,children:[],parentAlias:stack.length?stack[stack.length-1].alias:null,nodes:[]};
+    zones.push(z);stack.push(z);
   }
   function parseInnerLine(ln){
     const arrow=parseArrow(ln);
     if(arrow){edges.push(arrow);return;}
     const decl=parseDeclaration(ln,stack);
     if(decl){
+      if(decl.kind==='block'){pushZone(decl.label||decl.display||decl.alias,decl.alias);return;}
       declCount++;
-      const type=PUML_STEREOTYPE_MAP[decl.keyword]||'workstation';
+      /* type: stereotype map first, then keyword map, then label heuristic */
+      let type=null;
+      if(decl.stereotype&&PUML_STEREO_TYPE_MAP[decl.stereotype.toLowerCase()])type=PUML_STEREO_TYPE_MAP[decl.stereotype.toLowerCase()];
+      else if(!decl.bracket&&PUML_STEREOTYPE_MAP[decl.keyword])type=PUML_STEREOTYPE_MAP[decl.keyword];
+      if(!type)type=pumlGuessType(decl.display||decl.alias||'');
       const alias=pumlSanitizeAlias(decl.alias||decl.display||decl.keyword+declCount);
       const label=pumlStripCreole(decl.display||decl.alias||decl.keyword+' '+declCount);
       const meta={pumlKind:decl.keyword};
