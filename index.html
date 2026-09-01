@@ -38,22 +38,25 @@ button svg{display:block;flex:0 0 auto}
 .spacer{flex:1}
 .btn-text{font-weight:600}
 #main{flex:1;display:flex;min-height:0;position:relative}
-#palette{width:212px;flex:0 0 212px;background:var(--panel);
-  border-right:1px solid var(--border);overflow-y:auto;padding:12px 10px 24px}
+#palette{width:170px;flex:0 0 170px;background:var(--panel);
+  border-right:1px solid var(--border);overflow-y:auto;padding:10px 6px 24px}
 #palette::-webkit-scrollbar{width:8px}
 #palette::-webkit-scrollbar-thumb{background:#22304e;border-radius:4px}
-.pgroup{margin-bottom:14px}
-.pgroup h3{font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;
-  color:var(--faint);font-weight:700;padding:4px 6px 8px}
-.pitems{display:grid;grid-template-columns:1fr 1fr;gap:7px}
-.pitem{background:var(--panel2);border:1px solid var(--border);border-radius:10px;
-  padding:10px 4px 8px;display:flex;flex-direction:column;align-items:center;gap:7px;
-  cursor:grab;transition:border-color .12s,background .12s}
-.pitem:hover{border-color:var(--border2);background:#182338}
+.pgroup{margin-bottom:6px}
+.pgroup h3{font-size:10px;text-transform:uppercase;letter-spacing:1px;
+  color:var(--faint);font-weight:700;padding:8px 8px 4px;cursor:pointer;
+  user-select:none;display:flex;align-items:center;gap:6px}
+.pgroup h3::before{content:'▾';font-size:8px;color:var(--faint);transition:transform .15s}
+.pgroup.collapsed h3::before{transform:rotate(-90deg)}
+.pgroup.collapsed .plist{display:none}
+.plist{display:flex;flex-direction:column;gap:0}
+.pitem{display:flex;align-items:center;gap:8px;padding:5px 10px;
+  cursor:grab;transition:background .1s;border-radius:6px;font-size:11px;
+  color:var(--text);font-weight:500;user-select:none}
+.pitem:hover{background:var(--panel2)}
 .pitem:active{cursor:grabbing}
-.pitem .pic{width:34px;height:34px;border-radius:9px;display:flex;
-  align-items:center;justify-content:center}
-.pitem .pname{font-size:11px;color:var(--muted);font-weight:500}
+.pitem .pdot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;opacity:.85}
+.pitem .plabel{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #canvasWrap{flex:1;position:relative;min-width:0;background:var(--bg)}
 #canvas{position:absolute;inset:0;width:100%;height:100%;display:block;outline:none}
 #canvas.tool-select{cursor:default}
@@ -858,24 +861,28 @@ function buildPalette(){
   const pal=$('#palette');pal.innerHTML='';
   for(const cat of PALETTE_GROUPS){
     const grp=document.createElement('div');grp.className='pgroup';
-    grp.innerHTML='<h3>'+esc(cat)+'</h3><div class="pitems"></div>';
-    const items=grp.querySelector('.pitems');
+    grp.innerHTML='<h3>'+esc(cat)+'</h3><div class="plist"></div>';
+    const items=grp.querySelector('.plist');
     for(const key of Object.keys(TYPES).filter(k=>TYPES[k].cat===cat)){
+      const col=typeColor(key);
       const it=document.createElement('div');it.className='pitem';it.dataset.shape=key;
-      it.innerHTML='<div class="pic"></div><div class="pname">'+esc(key)+'</div>';
-      const pic=it.querySelector('.pic');pic.style.color='var(--accent)';
-      ic(pic,key);
+      it.innerHTML='<div class="pdot" style="background:'+col+'"></div><div class="plabel">'+esc(key)+'</div>';
       it.addEventListener('pointerdown',ev=>startPaletteDrag(ev,key));
       items.appendChild(it);
     }
+    /* collapsible category header */
+    grp.querySelector('h3').onclick=()=>grp.classList.toggle('collapsed');
     pal.appendChild(grp);
   }
 }
 function startPaletteDrag(ev,key){
   ev.preventDefault();
   const ghost=document.createElement('div');
-  ghost.className='pitem';ghost.style.cssText='position:fixed;z-index:100;pointer-events:none;display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:10px 16px;box-shadow:0 10px 30px rgba(0,0,0,.5);font-size:12px;font-weight:600';
-  ghost.textContent=key;document.body.appendChild(ghost);
+  ghost.className='pitem';
+  ghost.style.cssText='position:fixed;z-index:100;pointer-events:none;display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border2);border-radius:8px;padding:6px 14px;box-shadow:0 8px 24px rgba(0,0,0,.5);font-size:12px;font-weight:600;color:var(--text)';
+  const col=typeColor(key);
+  ghost.innerHTML='<div style="width:8px;height:8px;border-radius:50%;background:'+col+'"></div>'+esc(key);
+  document.body.appendChild(ghost);
   const mv=e=>{ghost.style.left=(e.clientX+12)+'px';ghost.style.top=(e.clientY+12)+'px';};
   mv(ev);
   const up=e=>{
@@ -2927,7 +2934,7 @@ function openPumlModal(){
   if(!panel){
     panel=document.createElement('div');
     panel.id='pumlPanel';
-    panel.style.cssText='width:0;flex:0 0 auto;overflow:hidden;background:var(--panel);border-left:1px solid var(--border);transition:width .2s ease;display:flex;flex-direction:column;min-width:0;height:100%';
+    panel.style.cssText='position:relative;width:0;flex:0 0 auto;overflow:hidden;background:var(--panel);border-left:1px solid var(--border);transition:width .2s ease;display:flex;flex-direction:column;min-width:0;height:100%';
     panel.innerHTML=
       '<div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex:0 0 auto">'+
       '<span style="font-weight:700;font-size:12px;white-space:nowrap">PlantUML</span>'+
@@ -2998,13 +3005,17 @@ function openPumlModal(){
     $('#pumlDownloadBtn').onclick=()=>{exportPuml();};
     $('#pumlClose').onclick=()=>{panel.style.width='0';open=false;$('#btnPuml').classList.remove('active');};
 
-    /* expand button: cycle through widths 380 → 560 → 760 → 380 */
-    let expandIdx=0;
+    /* expand button: cycle through widths 380 → 560 → 760 → 380.
+       Index is derived from the panel's current width (not tracked in a
+       closure var) so a close/reopen or a manual drag-resize can't desync
+       the cycle from what's actually on screen. */
     const expandWidths=[380,560,760];
     $('#pumlExpand').onclick=()=>{
-      expandIdx=(expandIdx+1)%expandWidths.length;
+      const curW=panel.offsetWidth;
+      const idx=expandWidths.reduce((best,w,i)=>curW>=w-1?i:best,-1);
+      const nextIdx=(idx+1)%expandWidths.length;
       panel.style.transition='width .2s ease';
-      panel.style.width=expandWidths[expandIdx]+'px';
+      panel.style.width=expandWidths[nextIdx]+'px';
     };
 
     /* drag handle to resize panel */
@@ -3015,7 +3026,7 @@ function openPumlModal(){
       const startX=e.clientX,startW=panel.offsetWidth;
       document.body.style.cursor='col-resize';
       const onMove=ev=>{
-        const newW=Math.max(280,Math.min(ev.clientX-startX+startW,window.innerWidth-300));
+        const newW=Math.max(280,Math.min(startW-(ev.clientX-startX),window.innerWidth-300));
         panel.style.width=newW+'px';
       };
       const onUp=()=>{document.body.style.cursor='';document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);panel.style.transition='width .2s ease';};
