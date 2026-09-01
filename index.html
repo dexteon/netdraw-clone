@@ -2927,13 +2927,15 @@ function openPumlModal(){
   if(!panel){
     panel=document.createElement('div');
     panel.id='pumlPanel';
-    panel.style.cssText='width:0;flex:0 0 auto;overflow:hidden;background:var(--panel);border-left:1px solid var(--border);transition:width .2s ease;display:flex;flex-direction:column;min-width:0';
+    panel.style.cssText='width:0;flex:0 0 auto;overflow:hidden;background:var(--panel);border-left:1px solid var(--border);transition:width .2s ease;display:flex;flex-direction:column;min-width:0;height:100%';
     panel.innerHTML=
       '<div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex:0 0 auto">'+
       '<span style="font-weight:700;font-size:12px;white-space:nowrap">PlantUML</span>'+
       '<span style="font-size:9px;color:var(--muted);white-space:nowrap">live sync</span>'+
+      '<button id="pumlExpand" title="Expand wider" style="min-width:22px;height:22px;font-size:11px;padding:0 4px">⇥</button>'+
       '<button id="pumlClose" style="margin-left:auto;min-width:22px;height:22px;font-size:11px">✕</button>'+
       '</div>'+
+      '<div id="pumlDragHandle" style="position:absolute;left:0;top:0;width:4px;height:100%;cursor:col-resize;background:transparent;z-index:10"></div>'+
       '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0">'+
       '<textarea id="pumlPaste" spellcheck="false" wrap="off" placeholder="@startuml\npackage DMZ {\n  component \"Web\" as web\n}\nweb --> db : reads\n@enduml" style="flex:1;width:100%;box-sizing:border-box;background:#0e1626;color:var(--text);border:none;border-bottom:1px solid var(--border);padding:8px 10px;font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.5;outline:none;resize:none;tab-size:2;white-space:pre;overflow:auto"></textarea>'+
       '<div id="pumlStatus" style="font-size:10px;color:var(--muted);padding:3px 10px;min-height:16px;flex:0 0 auto;background:#0b1120"></div>'+
@@ -2995,6 +2997,31 @@ function openPumlModal(){
     };
     $('#pumlDownloadBtn').onclick=()=>{exportPuml();};
     $('#pumlClose').onclick=()=>{panel.style.width='0';open=false;$('#btnPuml').classList.remove('active');};
+
+    /* expand button: cycle through widths 380 → 560 → 760 → 380 */
+    let expandIdx=0;
+    const expandWidths=[380,560,760];
+    $('#pumlExpand').onclick=()=>{
+      expandIdx=(expandIdx+1)%expandWidths.length;
+      panel.style.transition='width .2s ease';
+      panel.style.width=expandWidths[expandIdx]+'px';
+    };
+
+    /* drag handle to resize panel */
+    const dragHandle=$('#pumlDragHandle');
+    dragHandle.addEventListener('mousedown',e=>{
+      e.preventDefault();e.stopPropagation();
+      panel.style.transition='none';
+      const startX=e.clientX,startW=panel.offsetWidth;
+      document.body.style.cursor='col-resize';
+      const onMove=ev=>{
+        const newW=Math.max(280,Math.min(ev.clientX-startX+startW,window.innerWidth-300));
+        panel.style.width=newW+'px';
+      };
+      const onUp=()=>{document.body.style.cursor='';document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);panel.style.transition='width .2s ease';};
+      document.addEventListener('mousemove',onMove);
+      document.addEventListener('mouseup',onUp);
+    });
 
     /* expose toggle for the button */
     panel._toggle=()=>{
