@@ -578,6 +578,84 @@ function computeOrthoRoutes(){
       ORTHO_ROUTES.set(r.e.id,{d:'M '+pts.map(p=>p.x+' '+p.y).join(' L '),mid:{x:lx,y:ly}});
     }
   }
+  /* ---- post-processing: re-route edges that pierce non-endpoint nodes ----
+     For each piercing segment, find the nearest free corridor (x for vertical,
+     y for horizontal) that doesn't intersect any non-endpoint node, and splice
+     it in. Iterate until stable. ---- */
+  function findCorridor(axis,fixed,range0,range1,nodes,skipIds){
+    const lo=Math.min(range0,range1),hi=Math.max(range0,range1);
+    const blockers=nodes.filter(n=>!skipIds.has(n.id));
+    const base=fixed;
+    for(let d=0;d<=2000;d+=20){
+      for(const sign of d===0?[1]:[1,-1]){
+        const v=base+d*sign;
+        const ok=blockers.every(n=>{
+          if(axis==='x'){
+            return !(v>n.x+2&&v<n.x+nodeW(n)-2&&n.y+nodeH(n)>lo+2&&n.y<hi-2);
+          }else{
+            return !(v>n.y+2&&v<n.y+nodeH(n)-2&&n.x+nodeW(n)>lo+2&&n.x<hi-2);
+          }
+        });
+        if(ok)return v;
+      }
+    }
+    return base;
+  }
+  /* ---- second pass: for edges still piercing nodes, re-route via the right margin ----
+     Find the rightmost node x across the full diagram, then route: exit right, run
+     along the margin, re-enter at the target. This is the "bus channel" approach
+     used by ELK for dense mesh topologies. ---- */
+  const rightMargin=Math.max(...state.nodes.map(n=>n.x+nodeW(n)))+40;
+  const leftMargin=Math.min(...state.nodes.map(n=>n.x))-40;
+  for(const [eid,route] of ORTHO_ROUTES){
+    const e=state.edges.find(x=>x.id===eid);if(!e)continue;
+    const skip=new Set([e.a,e.b]);
+    let pts=route.d.replace("M ","").split(" L ").map(s=>s.split(" ").map(Number).map(Math.round));
+    /* check if still piercing after the iterative fix */
+    let piercing=false;
+    for(let i=0;i<pts.length-1;i++){
+      const[px,py]=pts[i],[qx,qy]=pts[i+1];
+      for(const n of state.nodes){
+        if(skip.has(n.id))continue;
+        if(px===qx&&px>n.x+3&&px<n.x+nodeW(n)-3&&n.y+nodeH(n)>Math.min(py,qy)+2&&n.y<Math.max(py,qy)-2){piercing=true;break;}
+        if(py===qy&&py>n.y+3&&py<n.y+nodeH(n)-3&&n.x+nodeW(n)>Math.min(px,qx)+2&&n.x<Math.max(px,qx)-2){piercing=true;break;}
+      }
+      if(piercing)break;
+    }
+    if(piercing){
+      const aN=nodeById(e.a),bN=nodeById(e.b);
+      const aRight=aN.x+nodeW(aN),bRight=bN.x+nodeW(bN);
+      const aLeft=aN.x,bLeft=bN.x;
+      /* pick the closer margin */
+      const useRight=(Math.abs(rightMargin-aRight)+Math.abs(rightMargin-bRight))<(Math.abs(aLeft-leftMargin)+Math.abs(bLeft-leftMargin));
+      const mx=useRight?rightMargin:leftMargin;
+      const ax=useRight?aRight:aLeft, bx=useRight?bRight:bLeft;
+      const ay=aN.y+nodeH(aN)/2, by=bN.y+nodeH(bN)/2;
+      pts=[{x:ax,y:ay},{x:mx,y:ay},{x:mx,y:by},{x:bx,y:by}];
+      route.d='M '+pts.map(p=>p[0]+' '+p[1]).join(' L ');
+      /* label: spread margin-routed edges along the vertical run to avoid stacking */
+      const myLabel=(ay+by)/2;
+      route.mid={x:mx+(useRight?28:-28),y:myLabel};
+      route._margin=true;
+    }
+  }
+  /* spread labels of margin-routed edges that share the same margin x */
+  const marginLabels=[...ORTHO_ROUTES.entries()].filter(([k,v])=>v._margin);
+  if(marginLabels.length){
+    marginLabels.sort((a,b)=>a[1].mid.y-b[1].mid.y);
+    for(let i=0;i<marginLabels.length;i++){
+      const[,route]=marginLabels[i];
+      /* nudge y to avoid overlapping with neighbors */
+      for(let t=1;t<marginLabels.length;t++){
+        const j=i+t;
+        if(j>=marginLabels.length)break;
+        const other=marginLabels[j][1];
+        if(Math.abs(route.mid.y-other.mid.y)<22){
+          other.mid.y=route.mid.y+22*Math.sign(other.mid.y-route.mid.y||1);
+        }
+      }
+    }
+  }
 }
 /* ===================== swimlanes ===================== */
 function laneRects(z){
@@ -2330,9 +2408,10 @@ function pumlParse(text){
   const byAlias=new Map();
   const stack=[];
   let declCount=0;
-  /* detect skinparam linetype ortho → route imported edges orthogonally */
+  /* orthogonal routing: explicit skinparam OR 'top to bottom direction' OR 'left to right direction'
+     (PlantUML defaults deployment/component diagrams to orthogonal-ish flow layouts) */
   let ortho=false;
-  if(/^\s*skinparam\s+linetype\s+ortho\s*$/im.test(text)||/\bskinparam\s+linetype\s+ortho\b/i.test(text)){ortho=true;}
+  if(/\bskinparam\s+linetype\s+ortho\b/i.test(text)||/\btop\s+to\s+bottom\s+direction\b/i.test(text)||/\bleft\s+to\s+right\s+direction\b/i.test(text)){ortho=true;}
   const BLOCK_KEYWORDS=['cloud','folder','rectangle','frame','node','stack','package','database','component'];
   for(const line of normalizeLines(text)){
     /* skip directives & noise (collected as warnings later if unrecognized) */
@@ -2764,7 +2843,7 @@ function pumlLayout(parsed){
   for(const e of parsed.edges){
     const aId=aliasToId.get(e.a),bId=aliasToId.get(e.b);
     if(!aId||!bId)continue;
-    edges.push({id:'e'+(ide++),a:aId,b:bId,dash:e.style==='dashed'?'dashed':'solid',mode:parsed.ortho?'ortho':'straight',anim:!!e.dir||!!e.label,label:e.label||''});
+    edges.push({id:'e'+(ide++),a:aId,b:bId,dash:e.style==='dashed'?'dashed':'solid',mode:parsed.ortho?'ortho':'straight',anim:!!e.dir,label:e.label||''});
   }
   for(const z of zones)delete z.nodeIds;
   return{nodes,edges,zones};
