@@ -1309,7 +1309,11 @@ $('#btnOpen').onclick=()=>{
   i.onchange=()=>{if(i.files[0])importJSON(i.files[0]);};
   i.click();
 };
-$('#btnPuml').onclick=openPumlModal;
+$('#btnPuml').onclick=()=>{
+  openPumlModal();
+  const p=$('#pumlPanel');
+  if(p)$('#btnPuml').classList.toggle('active',p.style.width&&p.style.width!=='0px');
+};
 $('#btnIngest').onclick=openIngestModal;
 /* ===================== examples ===================== */
 function sampleState(){
@@ -2918,29 +2922,32 @@ function doPumlImport(text){
   toast('Imported '+frag.nodes.length+' nodes, '+frag.edges.length+' links, '+frag.zones.length+' zones');
 }
 function openPumlModal(){
-  const m=$('#pumlModal');
-  if(!m){
-    const ov=document.createElement('div');
-    ov.id='pumlModal';
-    ov.style.cssText='position:fixed;inset:0;background:rgba(5,9,18,.72);display:flex;align-items:center;justify-content:center;z-index:200';
-    ov.innerHTML='<div style="display:flex;width:min(900px,96vw);height:min(680px,90vh);background:var(--panel);border:1px solid var(--border2);border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.55);overflow:hidden">'+
-      '<div style="flex:1;display:flex;flex-direction:column;min-width:0">'+
-      '<header style="padding:13px 18px;border-bottom:1px solid var(--border);font-weight:700;font-size:13.5px;display:flex;align-items:center;gap:8px">Live PlantUML Editor <span style="font-size:10px;color:var(--muted);font-weight:400">auto-syncs both ways</span><button id="pumlClose" style="float:right;min-width:24px;margin-left:auto">✕</button></header>'+
-      '<div style="flex:1;display:flex;flex-direction:column;padding:12px 16px;gap:8px;overflow:hidden">'+
-      '<textarea id="pumlPaste" spellcheck="false" wrap="off" placeholder="@startuml\npackage DMZ {\n  component \"Web\" as web\n}\nweb --> db : reads\n@enduml" style="flex:1;width:100%;box-sizing:border-box;background:#0e1626;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;outline:none;resize:none;tab-size:2;white-space:pre;overflow:auto"></textarea>'+
-      '<div id="pumlStatus" style="font-size:11px;color:var(--muted);min-height:16px"></div>'+
-      '<div style="display:flex;gap:8px;align-items:center">'+
-      '<input id="pumlFile" type="file" accept=".puml,text/plain" style="flex:1;font-size:12px;color:var(--muted)">'+
-      '<button id="pumlCopyBtn">Copy</button>'+
-      '<button id="pumlDownloadBtn">Download</button>'+
-      '</div></div></div>'+
-      '<div id="pumlPreview" style="width:380px;border-left:1px solid var(--border);display:flex;align-items:center;justify-content:center;overflow:auto;background:#0b1120"></div>'+
-      '</div>';
-    document.body.appendChild(ov);
-    let syncTimer=null,applying=false;
-    const ta=$('#pumlPaste'),statusEl=$('#pumlStatus'),preview=$('#pumlPreview');
+  /* Collapsible PUML panel docked on the right side of #main */
+  let panel=$('#pumlPanel');
+  if(!panel){
+    panel=document.createElement('div');
+    panel.id='pumlPanel';
+    panel.style.cssText='width:0;flex:0 0 auto;overflow:hidden;background:var(--panel);border-left:1px solid var(--border);transition:width .2s ease;display:flex;flex-direction:column;min-width:0';
+    panel.innerHTML=
+      '<div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex:0 0 auto">'+
+      '<span style="font-weight:700;font-size:12px;white-space:nowrap">PlantUML</span>'+
+      '<span style="font-size:9px;color:var(--muted);white-space:nowrap">live sync</span>'+
+      '<button id="pumlClose" style="margin-left:auto;min-width:22px;height:22px;font-size:11px">✕</button>'+
+      '</div>'+
+      '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0">'+
+      '<textarea id="pumlPaste" spellcheck="false" wrap="off" placeholder="@startuml\npackage DMZ {\n  component \"Web\" as web\n}\nweb --> db : reads\n@enduml" style="flex:1;width:100%;box-sizing:border-box;background:#0e1626;color:var(--text);border:none;border-bottom:1px solid var(--border);padding:8px 10px;font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.5;outline:none;resize:none;tab-size:2;white-space:pre;overflow:auto"></textarea>'+
+      '<div id="pumlStatus" style="font-size:10px;color:var(--muted);padding:3px 10px;min-height:16px;flex:0 0 auto;background:#0b1120"></div>'+
+      '<div style="display:flex;gap:4px;padding:6px 10px;border-top:1px solid var(--border);flex:0 0 auto">'+
+      '<input id="pumlFile" type="file" accept=".puml,text/plain" style="flex:1;font-size:10px;color:var(--muted);min-width:0">'+
+      '<button id="pumlCopyBtn" style="font-size:10px;min-width:48px">Copy</button>'+
+      '<button id="pumlDownloadBtn" style="font-size:10px;min-width:64px">Download</button>'+
+      '</div></div>';
+    const main=$('#main');
+    main.appendChild(panel);
 
-    /* live import on text change (debounced 400ms) */
+    let syncTimer=null,applying=false,open=false;
+    const ta=$('#pumlPaste'),statusEl=$('#pumlStatus');
+
     function liveImport(){
       const txt=ta.value;
       if(!txt.trim()){statusEl.textContent='';return;}
@@ -2948,10 +2955,9 @@ function openPumlModal(){
       try{
         doPumlImport(txt);
         const p=pumlParse(txt);
-        const warns=p.warnings.filter(w=>!w.includes('BackgroundColor')&&!w.includes('BorderColor')&&!w.includes('skinparam node'));
-        statusEl.textContent=p.nodes.length+' nodes, '+p.edges.length+' edges, '+p.zones.length+' zones'+(warns.length?' · '+warns.length+' warnings':'');
+        const warns=p.warnings.filter(w=>!w.includes('BackgroundColor')&&!w.includes('BorderColor')&&!w.includes('skinparam node')&&!w.includes('BorderColor')&&!w.includes('top to bottom'));
+        statusEl.textContent=p.nodes.length+' nodes · '+p.edges.length+' edges · '+p.zones.length+' zones'+(warns.length?' · '+warns.length+' warnings':'');
         statusEl.style.color=warns.length?'#fbbf24':'var(--muted)';
-        renderPreview(txt);
       }catch(e){statusEl.textContent='Parse error: '+e.message;statusEl.style.color='#f87171';}
       finally{applying=false;}
     }
@@ -2963,7 +2969,6 @@ function openPumlModal(){
       statusEl.style.color='var(--muted)';
     };
 
-    /* live export: when canvas changes, update the textarea */
     function liveExport(){
       if(applying)return;
       const text=pumlSerialize(state);
@@ -2975,49 +2980,36 @@ function openPumlModal(){
       }
     }
 
-    /* render a tiny SVG preview (same canvas, scaled to fit the side panel) */
-    function renderPreview(){
-      requestAnimationFrame(()=>{
-        const svg=document.querySelector('#canvas');
-        if(!svg||!svg.children.length)return;
-        const clone=svg.cloneNode(true);
-        const vb=svg.getAttribute('viewBox')||`0 0 ${svg.clientWidth||1000} ${svg.clientHeight||600}`;
-        clone.setAttribute('viewBox',vb);
-        clone.setAttribute('width','360');clone.setAttribute('height','600');
-        clone.style.cssText='max-width:360px;max-height:600px;width:100%;height:100%';
-        preview.innerHTML='';preview.appendChild(clone);
-      });
-    }
-
-    /* hook into commit() so canvas edits update the textarea in real time */
+    /* hook commit so canvas edits update the textarea */
     const origCommit=commit;
-    commit=function(){origCommit();liveExport();renderPreview();};
+    commit=function(){origCommit();if(open)liveExport();};
 
-    /* file load */
     $('#pumlFile').onchange=ev=>{
       const f=ev.target.files[0];if(!f)return;
       const rd=new FileReader();
       rd.onload=()=>{ta.value=rd.result;liveImport();};
       rd.readAsText(f);
     };
-    /* copy */
     $('#pumlCopyBtn').onclick=()=>{
       navigator.clipboard.writeText(ta.value).then(()=>{statusEl.textContent='Copied to clipboard';statusEl.style.color='#34d399';});
     };
-    /* download */
     $('#pumlDownloadBtn').onclick=()=>{exportPuml();};
-    /* close */
-    $('#pumlClose').onclick=()=>{
-      ov.style.display='none';
-      commit=origCommit;  /* restore original commit */
+    $('#pumlClose').onclick=()=>{panel.style.width='0';open=false;$('#btnPuml').classList.remove('active');};
+
+    /* expose toggle for the button */
+    panel._toggle=()=>{
+      if(open){panel.style.width='0';open=false;$('#btnPuml').classList.remove('active');}
+      else{
+        panel.style.width='380px';
+        open=true;
+        $('#btnPuml').classList.add('active');
+        ta.value=pumlSerialize(state);
+        liveImport();
+        setTimeout(()=>ta.focus(),250);
+      }
     };
   }
-  $('#pumlModal').style.display='flex';
-  /* populate with current diagram's PUML */
-  const ta=$('#pumlPaste');
-  ta.value=pumlSerialize(state);
-  /* trigger initial import + preview */
-  ta.dispatchEvent(new Event('input'));
+  panel._toggle();
 }
 function pumlSerialize(st){
   const L=[];
